@@ -1,0 +1,341 @@
+import logging
+import time
+import json
+
+import pandas as pd
+import requests
+from tenacity import (
+    retry, stop_after_attempt, wait_exponential,
+    retry_if_exception_type, before_sleep_log,
+)
+
+from config import (
+    NBA_SEASON, NBA_SEASON_TYPE, NBA_API_TIMEOUT,
+    NBA_API_RETRY_ATTEMPTS, NBA_API_RETRY_MIN_WAIT, NBA_API_RETRY_MAX_WAIT,
+    BALLDONTLIE_BASE_URL,
+)
+
+logger = logging.getLogger(__name__)
+
+_PLAYER_CACHE: dict[int, pd.DataFrame] = {}
+_TEAM_STATS_CACHE: pd.DataFrame | None = None
+_PLAYER_USAGE_CACHE: dict[int, float] = {}
+
+
+class NBAStatsClient:
+
+    def __init__(self, balldontlie_api_key: str | None = None):
+        self._bdl_key = balldontlie_api_key
+
+    # -------------------------------------------------------------------------
+    # Player ID lookup
+    # -------------------------------------------------------------------------
+
+    def find_player_id(self, player_name: str) -> int | None:
+        from nba_api.stats.static import players as nba_players
+        matches = nba_players.find_players_by_full_name(player_name)
+        if matches:
+            active = [p for p in matches if p.get("is_active")]
+            best = active[0] if active else matches[0]
+            return best["id"]
+
+        # Fuzzy fallback: try matching by last name
+        name_parts = player_name.strip().split()
+        if len(name_parts) >= 2:
+            last = name_parts[-1]
+            candidates = nba_players.find_players_by_last_name(last)
+            if candidates:
+                active = [p for p in candidates if p.get("is_active")]
+                best = active[0] if active else candidates[0]
+                return best["id"]
+
+        # balldontlie fallback
+        if self._bdl_key:
+            return self._bdl_find_player(player_name)
+
+        logger.warning("Could not find player ID for: %s", player_name)
+        return None
+
+    def _bdl_find_player(self, name: str) -> int | None:
+        try:
+            resp = self._bdl_get("/players", {"search": name, "per_page": 5})
+            results = resp.get("data", [])
+            if results:
+                return results[0]["id"]
+        except Exception as exc:
+            logger.debug("balldontlie player search failed for %s: %s", name, exc)
+        return None
+
+    # -------------------------------------------------------------------------
+    # Player game log (current season, all games)
+    # -------------------------------------------------------------------------
+
+    def get_player_game_log(self, player_id: int) -> pd.DataFrame:
+        if player_id in _PLAYER_CACHE:
+            return _PLAYER_CACHE[player_id]
+
+        df = self._fetch_game_log_nba_api(player_id)
+        if df is None or df.empty:
+            df = self._fetch_game_log_bdl(player_id)
+        if df is None:
+            df = pd.DataFrame()
+
+        _PLAYER_CACHE[player_id] = df
+        return df
+
+    def _fetch_game_log_nba_api(self, player_id: int) -> pd.DataFrame | None:
+        try:
+            from nba_api.stats.endpoints import playergamelog
+            endpoint = self._nba_api_call(
+                playergamelog.PlayerGameLog,
+                player_id=player_id,
+                season=NBA_SEASON,
+                season_type_all_star=NBA_SEASON_TYPE,
+                timeout=NBA_API_TIMEOUT,
+            )
+            if endpoint is None:
+                return None
+            df = endpoint.get_data_frames()[0]
+            if df.empty:
+                return None
+            df = df.copy()
+            # Parse location from MATCHUP: "LAL vs. GSW" = home, "LAL @ GSW" = away
+            df["location"] = df["MATCHUP"].apply(
+                lambda m: "Home" if "vs." in str(m) else "Away"
+            )
+            # Parse opponent abbreviation from MATCHUP
+            df["opponent_abbr"] = df["MATCHUP"].apply(self._parse_opponent_abbr)
+            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors="coerce")
+            df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+            return df
+        except Exception as exc:
+            logger.warning("nba_api game log failed for player %d: %s", player_id, exc)
+            return None
+
+    def _fetch_game_log_bdl(self, player_id: int) -> pd.DataFrame | None:
+        if not self._bdl_key:
+            return None
+        try:
+            from config import NBA_SEASON_YEAR
+            records = self._bdl_paginate(
+                "/stats",
+                {"player_ids[]": player_id, "seasons[]": NBA_SEASON_YEAR, "per_page": 100},
+            )
+            if not records:
+                return None
+            rows = []
+            for r in records:
+                game = r.get("game", {})
+                home_id = game.get("home_team_id")
+                team_id = r.get("team", {}).get("id")
+                location = "Home" if team_id == home_id else "Away"
+                matchup = r.get("team", {}).get("abbreviation", "")
+                rows.append({
+                    "GAME_DATE": pd.to_datetime(r.get("date", "")),
+                    "MATCHUP": matchup,
+                    "location": location,
+                    "opponent_abbr": "",
+                    "MIN": r.get("min", "0"),
+                    "PTS": r.get("pts", 0),
+                    "REB": r.get("reb", 0),
+                    "AST": r.get("ast", 0),
+                    "FG3M": r.get("fg3m", 0),
+                    "STL": r.get("stl", 0),
+                    "BLK": r.get("blk", 0),
+                    "TOV": r.get("turnover", 0),
+                })
+            df = pd.DataFrame(rows)
+            df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+            return df
+        except Exception as exc:
+            logger.warning("balldontlie game log failed for player %d: %s", player_id, exc)
+            return None
+
+    @staticmethod
+    def _parse_opponent_abbr(matchup: str) -> str:
+        parts = str(matchup).split()
+        if len(parts) >= 3:
+            return parts[-1]
+        return ""
+
+    # -------------------------------------------------------------------------
+    # Player home/away and rest-day splits
+    # -------------------------------------------------------------------------
+
+    def get_player_splits(self, player_id: int) -> dict:
+        try:
+            from nba_api.stats.endpoints import playerdashboardbygeneralsplits
+            endpoint = self._nba_api_call(
+                playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits,
+                player_id=player_id,
+                season=NBA_SEASON,
+                season_type_playoffs="Regular Season",
+                measure_type_detailed_defense="Base",
+                per_mode_simple="PerGame",
+                timeout=NBA_API_TIMEOUT,
+            )
+            if endpoint is None:
+                return {}
+
+            result = {}
+            dfs = endpoint.get_data_frames()
+            # Index varies by nba_api version; find by dataset name
+            dataset_names = [d.name for d in endpoint.get_normalized_dict().get("resultSets", [])]
+
+            location_df = None
+            rest_df = None
+            for i, df in enumerate(dfs):
+                name = dataset_names[i] if i < len(dataset_names) else ""
+                if "Location" in name and not df.empty:
+                    location_df = df
+                if "DaysRest" in name and not df.empty:
+                    rest_df = df
+
+            if location_df is not None:
+                for _, row in location_df.iterrows():
+                    gv = str(row.get("GROUP_VALUE", "")).lower()
+                    if gv in ("home", "road"):
+                        key = "home" if gv == "home" else "away"
+                        result[key] = row.to_dict()
+
+            if rest_df is not None:
+                for _, row in rest_df.iterrows():
+                    gv = str(row.get("GROUP_VALUE", ""))
+                    if gv == "0":
+                        result["rest_0"] = row.to_dict()
+                    elif gv == "1":
+                        result["rest_1"] = row.to_dict()
+                    elif gv in ("2", "3", "4+", "5+"):
+                        result["rest_2plus"] = row.to_dict()
+
+            return result
+        except Exception as exc:
+            logger.debug("Player splits failed for player %d: %s", player_id, exc)
+            return {}
+
+    # -------------------------------------------------------------------------
+    # Team advanced + opponent defensive stats (cached, called once)
+    # -------------------------------------------------------------------------
+
+    def get_team_advanced_stats(self) -> pd.DataFrame:
+        global _TEAM_STATS_CACHE
+        if _TEAM_STATS_CACHE is not None:
+            return _TEAM_STATS_CACHE
+
+        adv_df = self._fetch_team_stats(measure_type="Advanced")
+        opp_df = self._fetch_team_stats(measure_type="Opponent")
+
+        if adv_df is None and opp_df is None:
+            _TEAM_STATS_CACHE = pd.DataFrame()
+            return _TEAM_STATS_CACHE
+
+        if adv_df is not None and opp_df is not None:
+            merged = adv_df.merge(opp_df, on="TEAM_ID", suffixes=("", "_OPP"))
+        elif adv_df is not None:
+            merged = adv_df
+        else:
+            merged = opp_df
+
+        _TEAM_STATS_CACHE = merged
+        return _TEAM_STATS_CACHE
+
+    def _fetch_team_stats(self, measure_type: str) -> pd.DataFrame | None:
+        try:
+            from nba_api.stats.endpoints import leaguedashteamstats
+            endpoint = self._nba_api_call(
+                leaguedashteamstats.LeagueDashTeamStats,
+                season=NBA_SEASON,
+                season_type_all_star=NBA_SEASON_TYPE,
+                measure_type_detailed_defense=measure_type,
+                per_mode_simple="PerGame",
+                timeout=NBA_API_TIMEOUT,
+            )
+            if endpoint is None:
+                return None
+            df = endpoint.get_data_frames()[0]
+            return df if not df.empty else None
+        except Exception as exc:
+            logger.warning("Team stats (%s) fetch failed: %s", measure_type, exc)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Player usage rate (cached, called once)
+    # -------------------------------------------------------------------------
+
+    def get_player_usage(self) -> dict[int, float]:
+        global _PLAYER_USAGE_CACHE
+        if _PLAYER_USAGE_CACHE:
+            return _PLAYER_USAGE_CACHE
+
+        try:
+            from nba_api.stats.endpoints import leaguedashplayerstats
+            endpoint = self._nba_api_call(
+                leaguedashplayerstats.LeagueDashPlayerStats,
+                season=NBA_SEASON,
+                season_type_all_star=NBA_SEASON_TYPE,
+                measure_type_detailed_defense="Advanced",
+                per_mode_simple="PerGame",
+                timeout=NBA_API_TIMEOUT,
+            )
+            if endpoint is None:
+                return {}
+            df = endpoint.get_data_frames()[0]
+            if "PLAYER_ID" in df.columns and "USG_PCT" in df.columns:
+                _PLAYER_USAGE_CACHE = dict(zip(df["PLAYER_ID"].astype(int), df["USG_PCT"]))
+        except Exception as exc:
+            logger.warning("Player usage fetch failed: %s", exc)
+
+        return _PLAYER_USAGE_CACHE
+
+    # -------------------------------------------------------------------------
+    # nba_api retry wrapper
+    # -------------------------------------------------------------------------
+
+    def _nba_api_call(self, endpoint_class, **kwargs):
+        last_exc = None
+        for attempt in range(NBA_API_RETRY_ATTEMPTS):
+            try:
+                return endpoint_class(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                wait = NBA_API_RETRY_MIN_WAIT * (2 ** attempt)
+                logger.debug(
+                    "nba_api call %s attempt %d failed: %s — retrying in %ds",
+                    endpoint_class.__name__, attempt + 1, exc, wait,
+                )
+                time.sleep(min(wait, NBA_API_RETRY_MAX_WAIT))
+        logger.warning(
+            "nba_api call %s failed after %d attempts: %s",
+            endpoint_class.__name__, NBA_API_RETRY_ATTEMPTS, last_exc,
+        )
+        return None
+
+    # -------------------------------------------------------------------------
+    # balldontlie helpers
+    # -------------------------------------------------------------------------
+
+    def _bdl_get(self, path: str, params: dict) -> dict:
+        headers = {"Authorization": f"Bearer {self._bdl_key}"}
+        resp = requests.get(
+            BALLDONTLIE_BASE_URL + path,
+            headers=headers,
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _bdl_paginate(self, path: str, params: dict) -> list[dict]:
+        all_data = []
+        cursor = None
+        while True:
+            p = dict(params)
+            if cursor:
+                p["cursor"] = cursor
+            data = self._bdl_get(path, p)
+            all_data.extend(data.get("data", []))
+            cursor = data.get("meta", {}).get("next_cursor")
+            if not cursor:
+                break
+            time.sleep(1.0)
+        return all_data
