@@ -25,6 +25,19 @@ def get_current_season_year() -> int:
     return today.year - 1
 
 
+def get_nhl_season() -> str:
+    today = date.today()
+    if today.month >= 10:
+        return f"{today.year}{today.year + 1}"
+    return f"{today.year - 1}{today.year}"
+
+
+def get_active_sports() -> list[str]:
+    """Return sport keys that have active seasons this month."""
+    month = date.today().month
+    return [s for s, cfg in SPORT_CONFIG.items() if month in cfg["active_months"]]
+
+
 def load_config() -> dict:
     required = ["EMAIL_FROM", "EMAIL_PASSWORD", "EMAIL_TO"]
     missing = [k for k in required if not os.getenv(k)]
@@ -54,8 +67,7 @@ PRIZEPICKS_PER_PAGE = 250
 
 BALLDONTLIE_BASE_URL = "https://api.balldontlie.io/v1"
 
-# Maps PrizePicks stat_type strings to NBA game log DataFrame column names.
-# None means a computed combination (handled in historical_stats.py).
+# ── NBA legacy constants (still used by existing code) ──────────────────────
 PROP_STAT_MAP = {
     "Points": "PTS",
     "Rebounds": "REB",
@@ -77,7 +89,6 @@ COMBO_STAT_MAP = {
     "Reb+Ast": ["REB", "AST"],
 }
 
-# Opponent defensive stat columns per prop type (from MeasureType=Opponent)
 OPPONENT_STAT_COL = {
     "Points": "OPP_PTS",
     "Rebounds": "OPP_REB",
@@ -90,39 +101,6 @@ OPPONENT_STAT_COL = {
     "Pts+Ast": "OPP_PTS",
     "Pts+Reb": "OPP_PTS",
     "Reb+Ast": "OPP_REB",
-}
-
-NBA_TEAM_NAME_TO_ABBR = {
-    "Atlanta Hawks": "ATL",
-    "Boston Celtics": "BOS",
-    "Brooklyn Nets": "BKN",
-    "Charlotte Hornets": "CHA",
-    "Chicago Bulls": "CHI",
-    "Cleveland Cavaliers": "CLE",
-    "Dallas Mavericks": "DAL",
-    "Denver Nuggets": "DEN",
-    "Detroit Pistons": "DET",
-    "Golden State Warriors": "GSW",
-    "Houston Rockets": "HOU",
-    "Indiana Pacers": "IND",
-    "Los Angeles Clippers": "LAC",
-    "Los Angeles Lakers": "LAL",
-    "Memphis Grizzlies": "MEM",
-    "Miami Heat": "MIA",
-    "Milwaukee Bucks": "MIL",
-    "Minnesota Timberwolves": "MIN",
-    "New Orleans Pelicans": "NOP",
-    "New York Knicks": "NYK",
-    "Oklahoma City Thunder": "OKC",
-    "Orlando Magic": "ORL",
-    "Philadelphia 76ers": "PHI",
-    "Phoenix Suns": "PHX",
-    "Portland Trail Blazers": "POR",
-    "Sacramento Kings": "SAC",
-    "San Antonio Spurs": "SAS",
-    "Toronto Raptors": "TOR",
-    "Utah Jazz": "UTA",
-    "Washington Wizards": "WAS",
 }
 
 NBA_API_TIMEOUT = 30
@@ -139,4 +117,227 @@ PRIZEPICKS_HEADERS = {
     "Accept": "application/json",
     "Referer": "https://app.prizepicks.com/",
     "Origin": "https://app.prizepicks.com",
+}
+
+# ── Team name → abbreviation maps ──────────────────────────────────────────
+
+NBA_TEAM_NAME_TO_ABBR = {
+    "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+    "Los Angeles Clippers": "LAC", "Los Angeles Lakers": "LAL", "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA", "Milwaukee Bucks": "MIL", "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP", "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX",
+    "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC", "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS",
+}
+
+NHL_TEAM_NAME_TO_ABBR = {
+    "Anaheim Ducks": "ANA", "Boston Bruins": "BOS", "Buffalo Sabres": "BUF",
+    "Calgary Flames": "CGY", "Carolina Hurricanes": "CAR", "Chicago Blackhawks": "CHI",
+    "Colorado Avalanche": "COL", "Columbus Blue Jackets": "CBJ", "Dallas Stars": "DAL",
+    "Detroit Red Wings": "DET", "Edmonton Oilers": "EDM", "Florida Panthers": "FLA",
+    "Los Angeles Kings": "LAK", "Minnesota Wild": "MIN", "Montreal Canadiens": "MTL",
+    "Nashville Predators": "NSH", "New Jersey Devils": "NJD", "New York Islanders": "NYI",
+    "New York Rangers": "NYR", "Ottawa Senators": "OTT", "Philadelphia Flyers": "PHI",
+    "Pittsburgh Penguins": "PIT", "San Jose Sharks": "SJS", "Seattle Kraken": "SEA",
+    "St. Louis Blues": "STL", "Tampa Bay Lightning": "TBL", "Toronto Maple Leafs": "TOR",
+    "Utah Hockey Club": "UTA", "Vancouver Canucks": "VAN", "Vegas Golden Knights": "VGK",
+    "Washington Capitals": "WSH", "Winnipeg Jets": "WPG",
+}
+
+NFL_TEAM_NAME_TO_ABBR = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
+    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
+    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs": "KC", "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
+    "Los Angeles Rams": "LAR", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
+    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
+    "San Francisco 49ers": "SF", "Seattle Seahawks": "SEA", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
+}
+
+MLB_TEAM_NAME_TO_ABBR = {
+    "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL", "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS", "Chicago Cubs": "CHC", "Chicago White Sox": "CWS",
+    "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE", "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET", "Houston Astros": "HOU", "Kansas City Royals": "KC",
+    "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD", "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL", "Minnesota Twins": "MIN", "New York Mets": "NYM",
+    "New York Yankees": "NYY", "Oakland Athletics": "OAK", "Philadelphia Phillies": "PHI",
+    "Pittsburgh Pirates": "PIT", "San Diego Padres": "SD", "San Francisco Giants": "SF",
+    "Seattle Mariners": "SEA", "St. Louis Cardinals": "STL", "Tampa Bay Rays": "TB",
+    "Texas Rangers": "TEX", "Toronto Blue Jays": "TOR", "Washington Nationals": "WSH",
+    "Athletics": "OAK",
+}
+
+# ── Per-sport configuration ──────────────────────────────────────────────────
+SPORT_CONFIG: dict[str, dict] = {
+    "NBA": {
+        "name": "NBA",
+        "full_name": "NBA Basketball",
+        "odds_sport_key": "basketball_nba",
+        "active_months": [10, 11, 12, 1, 2, 3, 4, 5, 6],
+        "markets": [
+            "player_points", "player_rebounds", "player_assists",
+            "player_threes", "player_steals", "player_blocks", "player_turnovers",
+        ],
+        "market_to_stat": {
+            "player_points": "Points",
+            "player_rebounds": "Rebounds",
+            "player_assists": "Assists",
+            "player_threes": "3-PT Made",
+            "player_steals": "Steals",
+            "player_blocks": "Blocks",
+            "player_turnovers": "Turnovers",
+        },
+        "prop_stat_map": {
+            "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+            "3-PT Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
+            "Turnovers": "TOV", "Pts+Reb+Ast": None, "Pts+Ast": None,
+            "Pts+Reb": None, "Reb+Ast": None,
+        },
+        "combo_stat_map": {
+            "Pts+Reb+Ast": ["PTS", "REB", "AST"],
+            "Pts+Ast": ["PTS", "AST"],
+            "Pts+Reb": ["PTS", "REB"],
+            "Reb+Ast": ["REB", "AST"],
+        },
+        "opponent_stat_col": {
+            "Points": "OPP_PTS", "Rebounds": "OPP_REB", "Assists": "OPP_AST",
+            "3-PT Made": "OPP_FG3M", "Steals": "OPP_STL", "Blocks": "OPP_BLK",
+            "Turnovers": "OPP_TOV", "Pts+Reb+Ast": "OPP_PTS", "Pts+Ast": "OPP_PTS",
+            "Pts+Reb": "OPP_PTS", "Reb+Ast": "OPP_REB",
+        },
+        "outcome_stat_map": {
+            "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+            "3-PT Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
+            "Turnovers": "TOV",
+            "Pts+Reb+Ast": ["PTS", "REB", "AST"],
+            "Pts+Ast": ["PTS", "AST"],
+            "Pts+Reb": ["PTS", "REB"],
+            "Reb+Ast": ["REB", "AST"],
+        },
+        "counting_stats": {
+            "Points", "Rebounds", "Assists", "3-PT Made",
+            "Pts+Reb+Ast", "Pts+Ast", "Pts+Reb", "Reb+Ast",
+        },
+        "team_name_to_abbr": NBA_TEAM_NAME_TO_ABBR,
+        "stats_client_class": "NBAStatsClient",
+        "emoji": "🏀",
+    },
+    "NHL": {
+        "name": "NHL",
+        "full_name": "NHL Hockey",
+        "odds_sport_key": "icehockey_nhl",
+        "active_months": [10, 11, 12, 1, 2, 3, 4, 5, 6],
+        "markets": [
+            "player_points", "player_goals", "player_assists",
+            "player_shots_on_target", "player_power_play_points",
+        ],
+        "market_to_stat": {
+            "player_points": "Points",
+            "player_goals": "Goals",
+            "player_assists": "Assists",
+            "player_shots_on_target": "Shots on Goal",
+            "player_power_play_points": "Power Play Points",
+        },
+        "prop_stat_map": {
+            "Points": "PTS",       # pre-computed G+A in NHLStatsClient
+            "Goals": "G",
+            "Assists": "A",
+            "Shots on Goal": "SOG",
+            "Power Play Points": "PPP",
+        },
+        "combo_stat_map": {},
+        "opponent_stat_col": {},   # NHL team-defense stats not readily available
+        "outcome_stat_map": {
+            "Points": "PTS", "Goals": "G", "Assists": "A",
+            "Shots on Goal": "SOG", "Power Play Points": "PPP",
+        },
+        "counting_stats": {"Points", "Goals", "Assists", "Shots on Goal"},
+        "team_name_to_abbr": NHL_TEAM_NAME_TO_ABBR,
+        "stats_client_class": "NHLStatsClient",
+        "emoji": "🏒",
+    },
+    "NFL": {
+        "name": "NFL",
+        "full_name": "NFL Football",
+        "odds_sport_key": "americanfootball_nfl",
+        "active_months": [9, 10, 11, 12, 1],
+        "markets": [
+            "player_pass_yds", "player_pass_tds", "player_rush_yds",
+            "player_receptions", "player_reception_yds",
+        ],
+        "market_to_stat": {
+            "player_pass_yds": "Passing Yards",
+            "player_pass_tds": "Passing TDs",
+            "player_rush_yds": "Rushing Yards",
+            "player_receptions": "Receptions",
+            "player_reception_yds": "Receiving Yards",
+        },
+        "prop_stat_map": {
+            "Passing Yards": "PASS_YDS",
+            "Passing TDs": "PASS_TDS",
+            "Rushing Yards": "RUSH_YDS",
+            "Receptions": "REC",
+            "Receiving Yards": "REC_YDS",
+        },
+        "combo_stat_map": {},
+        "opponent_stat_col": {},
+        "outcome_stat_map": {
+            "Passing Yards": "PASS_YDS", "Passing TDs": "PASS_TDS",
+            "Rushing Yards": "RUSH_YDS", "Receptions": "REC",
+            "Receiving Yards": "REC_YDS",
+        },
+        "counting_stats": {"Passing Yards", "Rushing Yards", "Receiving Yards", "Receptions"},
+        "team_name_to_abbr": NFL_TEAM_NAME_TO_ABBR,
+        "stats_client_class": "NFLStatsClient",
+        "emoji": "🏈",
+    },
+    "MLB": {
+        "name": "MLB",
+        "full_name": "MLB Baseball",
+        "odds_sport_key": "baseball_mlb",
+        "active_months": [4, 5, 6, 7, 8, 9, 10],
+        "markets": [
+            "batter_hits", "batter_home_runs", "batter_rbis",
+            "batter_total_bases", "batter_runs_scored",
+            "batter_stolen_bases", "pitcher_strikeouts",
+        ],
+        "market_to_stat": {
+            "batter_hits": "Hits",
+            "batter_home_runs": "Home Runs",
+            "batter_rbis": "RBIs",
+            "batter_total_bases": "Total Bases",
+            "batter_runs_scored": "Runs Scored",
+            "batter_stolen_bases": "Stolen Bases",
+            "pitcher_strikeouts": "Strikeouts",
+        },
+        "prop_stat_map": {
+            "Hits": "H",
+            "Home Runs": "HR",
+            "RBIs": "RBI",
+            "Total Bases": "TB",
+            "Runs Scored": "R",
+            "Stolen Bases": "SB",
+            "Strikeouts": "SO",
+        },
+        "combo_stat_map": {},
+        "opponent_stat_col": {},
+        "outcome_stat_map": {
+            "Hits": "H", "Home Runs": "HR", "RBIs": "RBI",
+            "Total Bases": "TB", "Runs Scored": "R",
+            "Stolen Bases": "SB", "Strikeouts": "SO",
+        },
+        "counting_stats": {"Hits", "Home Runs", "RBIs", "Total Bases", "Runs Scored"},
+        "team_name_to_abbr": MLB_TEAM_NAME_TO_ABBR,
+        "stats_client_class": "MLBStatsClient",
+        "emoji": "⚾",
+    },
 }

@@ -4,3 +4,5 @@ python-dotenv>=1.0.0
 numpy>=1.26.0
 pandas>=2.1.0
 tenacity>=8.2.3
+# Optional: NFL support (only needed Sep–Jan when NFL is active)
+# nfl-data-py>=0.3.0

@@ -32,6 +32,7 @@ def render_yesterday_section(
     for r in sorted(yesterday_results, key=lambda x: x.get("rank", 99))[:10]:
         correct = r.get("correct")
         actual = r.get("actual_value")
+        sport = r.get("sport", "")
         if correct == -1:
             icon = "&#8212;"
             row_style = "background:#f8f9fa"
@@ -50,10 +51,11 @@ def render_yesterday_section(
             actual_str = "—"
 
         dir_color = "#28a745" if r.get("direction") == "OVER" else "#e67e22"
+        sport_tag = f"<span style='font-size:10px;color:#999;margin-left:4px'>{sport}</span>" if sport else ""
         rows_html += f"""
       <tr style="{row_style}">
         <td style="padding:6px 10px;font-weight:bold">{r.get('rank','')}</td>
-        <td style="padding:6px 10px">{r.get('player_name','')}
+        <td style="padding:6px 10px">{r.get('player_name','')}{sport_tag}
           <span style="color:{dir_color};font-weight:bold;font-size:11px"> {r.get('direction','')}</span></td>
         <td style="padding:6px 10px">{r.get('stat_type','')}</td>
         <td style="padding:6px 10px;font-weight:bold">{r.get('line','')}</td>
@@ -97,15 +99,21 @@ def render_yesterday_section(
 
 
 def render_email_html(
-    results: List[PropResult],
+    results_by_sport: dict[str, list[PropResult]],
     run_date: date,
     duration_secs: float,
     yesterday_section_html: str = "",
 ) -> str:
-    high_conf = [r for r in results if r.hit_probability > 65]
-    n_games = len({r.opponent_team_abbr for r in results})
+    """
+    results_by_sport: {"NBA": [...], "NHL": [...], ...} mapping sport name to sorted PropResult list.
+    """
+    # Flatten for global top-5 summary
+    all_results = [r for sport_results in results_by_sport.values() for r in sport_results]
+    all_results.sort(key=lambda r: r.hit_probability, reverse=True)
+
+    high_conf = [r for r in all_results if r.hit_probability > 65]
     date_str = run_date.strftime("%B %d, %Y")
-    top_5 = results[:5]
+    top_5 = all_results[:5]
 
     top_5_html = "  ".join(
         f"<strong>{r.player_name}</strong> "
@@ -115,17 +123,45 @@ def render_email_html(
         for r in top_5
     )
 
-    rows_html = "\n".join(_render_row(r) for r in results)
+    # Build per-sport table sections
+    sport_sections_html = ""
+    from config import SPORT_CONFIG
+    for sport_name, sport_results in results_by_sport.items():
+        if not sport_results:
+            continue
+        cfg = SPORT_CONFIG.get(sport_name, {})
+        emoji = cfg.get("emoji", "")
+        full_name = cfg.get("full_name", sport_name)
+        rows_html = "\n".join(_render_row(r) for r in sport_results)
+        sport_sections_html += f"""
+  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
+    {emoji} {full_name} &mdash; {len(sport_results)} Directions Ranked
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+    <thead>
+      <tr>
+        <th>#</th><th>Player</th><th>Team</th><th>Direction</th>
+        <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
+        <th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows_html}
+    </tbody>
+  </table>"""
+
+    total_props = len(all_results)
+    n_sports = len([s for s, r in results_by_sport.items() if r])
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NBA Prop Picks – {date_str}</title>
+<title>Prop Picks – {date_str}</title>
 <style>
   body {{ margin: 0; padding: 0; background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; font-size: 13px; }}
-  .wrap {{ max-width: 960px; margin: 20px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
+  .wrap {{ max-width: 980px; margin: 20px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
   .header {{ background: #1a2a5e; color: #fff; padding: 22px 26px; }}
   .header h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }}
   .header .meta {{ font-size: 12px; opacity: .8; }}
@@ -156,49 +192,32 @@ def render_email_html(
 <div class="wrap">
 
   <div class="header">
-    <h1>NBA Prop Picks &mdash; {date_str}</h1>
+    <h1>Multi-Sport Prop Picks &mdash; {date_str}</h1>
     <div class="meta">
-      <span>&#127936; {len(results)} Directions Ranked</span>
+      <span>&#127936; {total_props} Directions Ranked</span>
       <span>&#128994; {len(high_conf)} High Confidence (&gt;65%)</span>
-      <span>&#127944; ~{n_games} Games Today</span>
+      <span>&#127931; {n_sports} Sport{"s" if n_sports != 1 else ""} Active</span>
       <span>&#9201; {duration_secs:.0f}s runtime</span>
     </div>
   </div>
 
   <div class="topbox">
-    <strong>Top 5 Today:</strong>&nbsp;&nbsp;{top_5_html}
+    <strong>Top 5 Today (All Sports):</strong>&nbsp;&nbsp;{top_5_html}
   </div>
 
   {yesterday_section_html}
 
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Player</th>
-        <th>Team</th>
-        <th>Direction</th>
-        <th>Prop</th>
-        <th>Line</th>
-        <th>Predicted</th>
-        <th>Probability</th>
-        <th>20G Hit Rate</th>
-        <th>H2H (this season)</th>
-        <th>Key Factors</th>
-      </tr>
-    </thead>
-    <tbody>
-{rows_html}
-    </tbody>
-  </table>
+  {sport_sections_html}
 
   <div class="footer">
     <p><strong>Methodology:</strong> Composite probability is built from a 20-game hit rate base, adjusted by:
     recent 5-game form (+20%), season average vs line (+15%), last 10-game average (+10%),
     H2H vs opponent <em>this season only</em> (+12%), opponent defensive rating (+10%),
     home/away split (+5%), rest days (+4%), pace factor (+4%).
-    Data sourced from stats.nba.com (via nba_api) and PrizePicks public API.
-    H2H stats reflect current-season matchups only and are zeroed out if fewer than 2 games available.
+    NBA data sourced from stats.nba.com (via nba_api).
+    NHL data sourced from api-web.nhle.com. MLB data sourced from statsapi.mlb.com.
+    Prop lines from The Odds API (DraftKings/FanDuel/BetMGM).
+    H2H reflects current-season matchups only (zeroed if fewer than 2 games).
     </p>
     <p>Generated {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} &nbsp;|&nbsp;
     <em>For entertainment purposes only. Not financial advice.</em></p>
@@ -250,19 +269,24 @@ def _render_row(r: PropResult) -> str:
       </tr>"""
 
 
-def render_plain_text(results: List[PropResult], run_date: date) -> str:
+def render_plain_text(results_by_sport: dict[str, list[PropResult]], run_date: date) -> str:
     lines = [
-        f"NBA Prop Picks — {run_date.strftime('%B %d, %Y')}",
+        f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
         "=" * 70,
         "",
     ]
-    for r in results[:30]:
-        lines.append(
-            f"{r.rank:>3}. {r.player_name:<22} {r.direction:<5} "
-            f"{r.stat_type:<12} Line:{r.line:<6} "
-            f"Prob:{r.hit_probability:.0f}%  "
-            f"Pred:{r.predicted_value:.1f}"
-        )
-    lines += ["", "Data: stats.nba.com + PrizePicks public API",
+    for sport_name, sport_results in results_by_sport.items():
+        if not sport_results:
+            continue
+        lines.append(f"── {sport_name} ──")
+        for r in sport_results[:20]:
+            lines.append(
+                f"{r.rank:>3}. {r.player_name:<22} {r.direction:<5} "
+                f"{r.stat_type:<14} Line:{r.line:<6} "
+                f"Prob:{r.hit_probability:.0f}%  "
+                f"Pred:{r.predicted_value:.1f}"
+            )
+        lines.append("")
+    lines += ["Data: stats.nba.com + nhle.com + mlb.com + The Odds API",
               "Not financial advice."]
     return "\n".join(lines)

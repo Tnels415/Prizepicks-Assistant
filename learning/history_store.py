@@ -40,10 +40,13 @@ CREATE TABLE IF NOT EXISTS predictions (
     actual_value     REAL,
     correct          INTEGER,
     evaluated_at     TEXT,
+    sport            TEXT    NOT NULL DEFAULT 'NBA',
     UNIQUE(date, player_name, stat_type, direction)
 );
 CREATE INDEX IF NOT EXISTS idx_predictions_date
     ON predictions(date);
+CREATE INDEX IF NOT EXISTS idx_predictions_sport
+    ON predictions(sport);
 
 CREATE TABLE IF NOT EXISTS factor_weights (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,11 +55,19 @@ CREATE TABLE IF NOT EXISTS factor_weights (
     weight                REAL    NOT NULL,
     accuracy_contribution REAL    NOT NULL,
     sample_size           INTEGER NOT NULL,
-    UNIQUE(date, factor_name)
+    sport                 TEXT    NOT NULL DEFAULT 'NBA',
+    UNIQUE(date, factor_name, sport)
 );
 CREATE INDEX IF NOT EXISTS idx_factor_weights_date
     ON factor_weights(date);
 """
+
+# Migration to add 'sport' column to existing databases
+_MIGRATIONS = [
+    "ALTER TABLE predictions ADD COLUMN sport TEXT NOT NULL DEFAULT 'NBA'",
+    "ALTER TABLE factor_weights ADD COLUMN sport TEXT NOT NULL DEFAULT 'NBA'",
+    "CREATE INDEX IF NOT EXISTS idx_predictions_sport ON predictions(sport)",
+]
 
 
 class HistoryStore:
@@ -86,6 +97,12 @@ class HistoryStore:
                 stmt = stmt.strip()
                 if stmt:
                     conn.execute(stmt)
+            # Apply column-add migrations idempotently
+            for sql in _MIGRATIONS:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
     # ------------------------------------------------------------------
     # Write predictions
@@ -96,6 +113,7 @@ class HistoryStore:
         results: list,
         run_date: date,
         player_id_map: dict[str, int | None],
+        sport: str = "NBA",
     ) -> int:
         date_str = run_date.isoformat()
         rows = []
@@ -112,6 +130,7 @@ class HistoryStore:
                 r.rank,
                 r.predicted_value,
                 json.dumps(r.raw_adjustments),
+                getattr(r, "sport", sport),
             ))
         inserted = 0
         with self._conn() as conn:
@@ -119,12 +138,12 @@ class HistoryStore:
                 cur = conn.execute(
                     """INSERT OR IGNORE INTO predictions
                        (date, player_name, player_id, team_abbr, stat_type, line,
-                        direction, hit_probability, rank, predicted_value, raw_adjustments)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        direction, hit_probability, rank, predicted_value, raw_adjustments, sport)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     row,
                 )
                 inserted += cur.rowcount
-        logger.debug("Saved %d/%d predictions for %s", inserted, len(rows), date_str)
+        logger.debug("Saved %d/%d predictions (%s) for %s", inserted, len(rows), sport, date_str)
         return inserted
 
     def update_player_id(self, player_name: str, player_id: int) -> None:
@@ -138,12 +157,18 @@ class HistoryStore:
     # Read unevaluated predictions
     # ------------------------------------------------------------------
 
-    def get_unevaluated_predictions(self, for_date: date) -> list[dict]:
+    def get_unevaluated_predictions(self, for_date: date, sport: str | None = None) -> list[dict]:
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM predictions WHERE date=? AND correct IS NULL",
-                (for_date.isoformat(),),
-            ).fetchall()
+            if sport:
+                rows = conn.execute(
+                    "SELECT * FROM predictions WHERE date=? AND correct IS NULL AND sport=?",
+                    (for_date.isoformat(), sport),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM predictions WHERE date=? AND correct IS NULL",
+                    (for_date.isoformat(),),
+                ).fetchall()
         result = []
         for row in rows:
             d = dict(row)
@@ -155,13 +180,24 @@ class HistoryStore:
             result.append(d)
         return result
 
-    def get_distinct_unevaluated_players(self, for_date: date) -> list[tuple[str, int | None]]:
+    def get_distinct_unevaluated_players(
+        self,
+        for_date: date,
+        sport: str | None = None,
+    ) -> list[tuple[str, int | None]]:
         with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT DISTINCT player_name, player_id
-                   FROM predictions WHERE date=? AND correct IS NULL""",
-                (for_date.isoformat(),),
-            ).fetchall()
+            if sport:
+                rows = conn.execute(
+                    """SELECT DISTINCT player_name, player_id
+                       FROM predictions WHERE date=? AND correct IS NULL AND sport=?""",
+                    (for_date.isoformat(), sport),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT DISTINCT player_name, player_id
+                       FROM predictions WHERE date=? AND correct IS NULL""",
+                    (for_date.isoformat(),),
+                ).fetchall()
         return [(r["player_name"], r["player_id"]) for r in rows]
 
     # ------------------------------------------------------------------
@@ -187,12 +223,13 @@ class HistoryStore:
     # Read for calibration
     # ------------------------------------------------------------------
 
-    def get_evaluated_predictions(self, min_days: int = 7) -> list[dict]:
-        if self.count_distinct_dates() < min_days:
+    def get_evaluated_predictions(self, min_days: int = 7, sport: str = "NBA") -> list[dict]:
+        if self.count_distinct_dates(sport=sport) < min_days:
             return []
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM predictions WHERE correct IN (0, 1)",
+                "SELECT * FROM predictions WHERE correct IN (0, 1) AND sport=?",
+                (sport,),
             ).fetchall()
         result = []
         for row in rows:
@@ -205,15 +242,16 @@ class HistoryStore:
             result.append(d)
         return result
 
-    def count_distinct_dates(self) -> int:
+    def count_distinct_dates(self, sport: str = "NBA") -> int:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COUNT(DISTINCT date) AS n FROM predictions WHERE correct IN (0,1)"
+                "SELECT COUNT(DISTINCT date) AS n FROM predictions WHERE correct IN (0,1) AND sport=?",
+                (sport,),
             ).fetchone()
         return row["n"] if row else 0
 
     # ------------------------------------------------------------------
-    # Factor weights
+    # Factor weights (per-sport)
     # ------------------------------------------------------------------
 
     def save_factor_weights(
@@ -222,28 +260,31 @@ class HistoryStore:
         accuracy_contributions: dict[str, float],
         sample_sizes: dict[str, int],
         snapshot_date: date,
+        sport: str = "NBA",
     ) -> None:
         date_str = snapshot_date.isoformat()
         with self._conn() as conn:
             for factor in FACTOR_NAMES:
                 conn.execute(
                     """INSERT OR REPLACE INTO factor_weights
-                       (date, factor_name, weight, accuracy_contribution, sample_size)
-                       VALUES (?,?,?,?,?)""",
+                       (date, factor_name, weight, accuracy_contribution, sample_size, sport)
+                       VALUES (?,?,?,?,?,?)""",
                     (
                         date_str,
                         factor,
                         weights.get(factor, 1.0),
                         accuracy_contributions.get(factor, 0.5),
                         sample_sizes.get(factor, 0),
+                        sport,
                     ),
                 )
 
-    def get_latest_factor_weights(self) -> dict[str, float] | None:
+    def get_latest_factor_weights(self, sport: str = "NBA") -> dict[str, float] | None:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT factor_name, weight FROM factor_weights
-                   WHERE date = (SELECT MAX(date) FROM factor_weights)"""
+                   WHERE sport=? AND date = (SELECT MAX(date) FROM factor_weights WHERE sport=?)""",
+                (sport, sport),
             ).fetchall()
         if not rows:
             return None
@@ -253,35 +294,44 @@ class HistoryStore:
     # Email section data
     # ------------------------------------------------------------------
 
-    def get_results_for_date(self, for_date: date) -> list[dict]:
+    def get_results_for_date(self, for_date: date, sport: str | None = None) -> list[dict]:
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM predictions WHERE date=? ORDER BY rank ASC",
-                (for_date.isoformat(),),
-            ).fetchall()
+            if sport:
+                rows = conn.execute(
+                    "SELECT * FROM predictions WHERE date=? AND sport=? ORDER BY rank ASC",
+                    (for_date.isoformat(), sport),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM predictions WHERE date=? ORDER BY rank ASC",
+                    (for_date.isoformat(),),
+                ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_cumulative_accuracy(self) -> dict:
+    def get_cumulative_accuracy(self, sport: str | None = None) -> dict:
         with self._conn() as conn:
+            if sport:
+                where = "WHERE correct IN (0,1) AND sport=?"
+                args = (sport,)
+            else:
+                where = "WHERE correct IN (0,1)"
+                args = ()
+
             total_row = conn.execute(
-                "SELECT COUNT(*) AS n, SUM(correct) AS s FROM predictions WHERE correct IN (0,1)"
+                f"SELECT COUNT(*) AS n, SUM(correct) AS s FROM predictions {where}", args
             ).fetchone()
             stat_rows = conn.execute(
-                """SELECT stat_type,
-                          COUNT(*) AS total,
-                          SUM(correct) AS correct
-                   FROM predictions WHERE correct IN (0,1)
-                   GROUP BY stat_type"""
+                f"""SELECT stat_type, COUNT(*) AS total, SUM(correct) AS correct
+                    FROM predictions {where} GROUP BY stat_type""",
+                args,
             ).fetchall()
             dir_rows = conn.execute(
-                """SELECT direction,
-                          COUNT(*) AS total,
-                          SUM(correct) AS correct
-                   FROM predictions WHERE correct IN (0,1)
-                   GROUP BY direction"""
+                f"""SELECT direction, COUNT(*) AS total, SUM(correct) AS correct
+                    FROM predictions {where} GROUP BY direction""",
+                args,
             ).fetchall()
             days_row = conn.execute(
-                "SELECT COUNT(DISTINCT date) AS n FROM predictions WHERE correct IN (0,1)"
+                f"SELECT COUNT(DISTINCT date) AS n FROM predictions {where}", args
             ).fetchone()
 
         total = total_row["n"] or 0

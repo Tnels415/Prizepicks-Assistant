@@ -6,10 +6,11 @@ from datetime import date
 
 import pandas as pd
 
-from data.nba_stats_client import NBAStatsClient
+from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
+from config import SPORT_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class PropResult:
     h2h_hit_rate: float
     h2h_avg: float
     h2h_sample_size: int
+    sport: str = "NBA"
     key_factors: list[str] = field(default_factory=list)
     data_quality: str = "full"      # "full", "partial", "minimal"
     raw_adjustments: dict = field(default_factory=dict)
@@ -48,30 +50,36 @@ class PropAnalyzer:
 
     def __init__(
         self,
-        stats_client: NBAStatsClient,
+        stats_client: BaseStatsClient,
         schedule_client: ScheduleClient,
+        sport_config: dict | None = None,
         corrections=None,  # learning.calibrator.Corrections | None
-    ):
+    ) -> None:
         self._stats = stats_client
         self._schedule = schedule_client
-        self._calc = HistoricalStatsCalculator()
-        self._scorer = FactorScorer()
+        self._sport = sport_config or SPORT_CONFIG["NBA"]
         self._corrections = corrections
+        self._calc = HistoricalStatsCalculator(
+            prop_stat_map=self._sport["prop_stat_map"],
+            combo_stat_map=self._sport["combo_stat_map"],
+        )
+        self._scorer = FactorScorer(sport_config=self._sport)
         self._team_stats: pd.DataFrame | None = None
         self._team_abbr_to_id: dict[str, int] = {}
         self._team_id_to_abbr: dict[int, str] = {}
         self._todays_games: list[dict] = []
 
     def analyze_all_props(self, props: list[dict]) -> list[PropResult]:
-        logger.info("Pre-loading team stats…")
+        sport_key = self._sport["odds_sport_key"]
+        logger.info("Pre-loading %s team stats…", self._sport["name"])
         self._team_stats = self._stats.get_team_advanced_stats()
         self._stats.get_player_usage()
         self._team_abbr_to_id = self._schedule.get_team_abbr_to_id()
         self._team_id_to_abbr = self._schedule.get_team_id_to_abbr()
-        self._todays_games = self._schedule.get_todays_games()
+        self._todays_games = self._schedule.get_todays_games(sport_key=sport_key)
 
         results: list[PropResult] = []
-        seen_players: dict[str, pd.DataFrame] = {}  # cache per player name
+        seen_players: dict[str, pd.DataFrame] = {}
 
         for prop in props:
             try:
@@ -85,12 +93,14 @@ class PropAnalyzer:
                     exc_info=True,
                 )
 
-        # Sort all results (both OVER and UNDER rows) by hit_probability descending
         results.sort(key=lambda r: r.hit_probability, reverse=True)
         for i, r in enumerate(results, 1):
             r.rank = i
 
-        logger.info("Analysis complete: %d prop directions ranked", len(results))
+        logger.info(
+            "%s analysis complete: %d prop directions ranked",
+            self._sport["name"], len(results),
+        )
         return results
 
     def _analyze_single_prop(
@@ -106,13 +116,11 @@ class PropAnalyzer:
         event_home = prop.get("event_home_abbr", "")
         event_away = prop.get("event_away_abbr", "")
 
-        # Find player ID
         player_id = self._stats.find_player_id(player_name)
         if player_id is None:
             logger.warning("Skipping %s — player ID not found", player_name)
             return None
 
-        # Fetch game log early so we can derive team_abbr if missing
         if player_name not in player_cache:
             player_cache[player_name] = self._stats.get_player_game_log(player_id)
         game_log = player_cache[player_name]
@@ -120,16 +128,14 @@ class PropAnalyzer:
         # Derive team_abbr from game log MATCHUP when Odds API didn't supply it
         if not team_abbr and not game_log.empty and "MATCHUP" in game_log.columns:
             matchup = str(game_log["MATCHUP"].iloc[0])
-            team_abbr = matchup.strip()[:3].upper()
+            team_abbr = matchup.split()[0].upper()
 
-        # If still unknown, try each team in the event
         if not team_abbr and (event_home or event_away):
             for candidate in (event_home, event_away):
                 if candidate and self._determine_game_context(candidate):
                     team_abbr = candidate
                     break
 
-        # Game context for today
         context = self._determine_game_context(team_abbr)
         if context is None:
             logger.debug("Skipping %s — no game today for team %s", player_name, team_abbr)
@@ -143,10 +149,7 @@ class PropAnalyzer:
             logger.warning("Skipping %s — no game log data", player_name)
             return None
 
-        # Rest days from game log dates
         rest_days = self._calc.infer_rest_days(game_log)
-
-        # Historical stats
         hit_rate_20, games_analyzed = self._calc.calculate_hit_rate(game_log, stat_type, line)
         avgs = self._calc.calculate_averages(game_log, stat_type)
         h2h = self._calc.calculate_h2h_stats(game_log, stat_type, line, opponent_abbr)
@@ -160,7 +163,6 @@ class PropAnalyzer:
             )
             return None
 
-        # Factor scores
         delta_season = self._scorer.score_season_avg_vs_line(avgs["season_avg"], line)
         delta_form = self._scorer.score_recent_form(avgs["last_5_avg"], avgs["last_10_avg"], line)
         delta_h2h = self._scorer.score_h2h_this_season(
@@ -190,7 +192,6 @@ class PropAnalyzer:
             hit_rate_20, adjustments, learned_weights=learned_weights
         )
 
-        # Apply calibration and stat-type bias corrections from historical data
         if self._corrections and self._corrections.has_sufficient_data:
             bucket_mid = int(over_prob // 10) * 10 + 5
             cal_delta = self._corrections.calibration_map.get(bucket_mid, 0.0)
@@ -236,23 +237,16 @@ class PropAnalyzer:
             h2h_hit_rate=h2h["hit_rate"],
             h2h_avg=h2h["avg"],
             h2h_sample_size=h2h["sample_size"],
+            sport=self._sport["name"],
             key_factors=key_factors,
             data_quality=data_quality,
             raw_adjustments=raw_adj,
         )
 
-        over_result = PropResult(
-            direction="OVER",
-            hit_probability=over_prob,
-            **base_kwargs,
-        )
-        under_result = PropResult(
-            direction="UNDER",
-            hit_probability=under_prob,
-            **base_kwargs,
-        )
-
-        return [over_result, under_result]
+        return [
+            PropResult(direction="OVER",  hit_probability=over_prob,  **base_kwargs),
+            PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs),
+        ]
 
     def _determine_game_context(self, team_abbr: str) -> dict | None:
         team_abbr_upper = team_abbr.upper()
@@ -294,9 +288,7 @@ class PropAnalyzer:
     ) -> list[str]:
         factors = []
 
-        factors.append(
-            f"Avg {avgs['last_10_avg']:.1f} last 10G (line: {line})"
-        )
+        factors.append(f"Avg {avgs['last_10_avg']:.1f} last 10G (line: {line})")
 
         if opp_rank is not None:
             def ordinal(n: int) -> str:
@@ -304,7 +296,7 @@ class PropAnalyzer:
                     return f"{n}th"
                 s = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
                 return f"{n}{s}"
-            factors.append(f"Opp allows {ordinal(opp_rank)}-most in category (rank {opp_rank}/30)")
+            factors.append(f"Opp allows {ordinal(opp_rank)}-most (rank {opp_rank})")
 
         if h2h["reliable"] and h2h["sample_size"] >= 2:
             hits = round(h2h["hit_rate"] * h2h["sample_size"])

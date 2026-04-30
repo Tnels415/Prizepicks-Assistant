@@ -13,9 +13,17 @@ logger = logging.getLogger(__name__)
 
 class HistoricalStatsCalculator:
 
+    def __init__(
+        self,
+        prop_stat_map: dict | None = None,
+        combo_stat_map: dict | None = None,
+    ) -> None:
+        self._prop_stat_map = prop_stat_map if prop_stat_map is not None else PROP_STAT_MAP
+        self._combo_stat_map = combo_stat_map if combo_stat_map is not None else COMBO_STAT_MAP
+
     def get_stat_series(self, df: pd.DataFrame, stat_type: str) -> pd.Series:
-        if stat_type in COMBO_STAT_MAP:
-            cols = COMBO_STAT_MAP[stat_type]
+        if stat_type in self._combo_stat_map:
+            cols = self._combo_stat_map[stat_type]
             available = [c for c in cols if c in df.columns]
             if not available:
                 return pd.Series(dtype=float)
@@ -24,7 +32,7 @@ class HistoricalStatsCalculator:
                 series = series + df[col].astype(float)
             return series
 
-        col = PROP_STAT_MAP.get(stat_type)
+        col = self._prop_stat_map.get(stat_type)
         if col and col in df.columns:
             return df[col].astype(float)
 

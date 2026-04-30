@@ -4,12 +4,20 @@ import logging
 
 import pandas as pd
 
-from config import OPPONENT_STAT_COL
+from config import OPPONENT_STAT_COL, SPORT_CONFIG
 
 logger = logging.getLogger(__name__)
 
+# Default NBA counting stats (used when no sport_config provided)
+_NBA_COUNTING_STATS = SPORT_CONFIG["NBA"]["counting_stats"]
+
 
 class FactorScorer:
+
+    def __init__(self, sport_config: dict | None = None) -> None:
+        cfg = sport_config or SPORT_CONFIG["NBA"]
+        self._opponent_stat_col: dict = cfg.get("opponent_stat_col", OPPONENT_STAT_COL)
+        self._counting_stats: set = cfg.get("counting_stats", _NBA_COUNTING_STATS)
 
     # -------------------------------------------------------------------------
     # Individual factor adjustments (returns signed pp delta)
@@ -45,7 +53,6 @@ class FactorScorer:
         if not h2h_reliable or h2h_sample_size < 2:
             return 0.0
         deviation = h2h_hit_rate - 0.5
-        # Scale: ±50pp deviation in hit rate maps to ±8pp probability adjustment
         return float(max(-8.0, min(8.0, deviation * 16.0)))
 
     def score_opponent_defense(
@@ -55,38 +62,38 @@ class FactorScorer:
         opponent_team_id: int,
     ) -> tuple[float, int | None]:
         """
-        Returns (adjustment pp, rank 1-30).
-        Rank 1 = best defense (allows fewest) → negative adjustment (harder to go Over).
-        Rank 30 = worst defense → positive adjustment.
+        Returns (adjustment pp, rank).
+        Rank 1 = best defense (allows fewest) → negative adjustment.
+        Rank N = worst defense → positive adjustment.
+        Returns (0.0, None) if team stats not available (non-NBA sports).
         """
         if team_stats_df is None or team_stats_df.empty:
             return 0.0, None
 
-        opp_col = OPPONENT_STAT_COL.get(stat_type)
+        opp_col = self._opponent_stat_col.get(stat_type)
         if not opp_col or opp_col not in team_stats_df.columns:
-            # Fall back to DEF_RATING for points-based props
             if "DEF_RATING" in team_stats_df.columns and "TEAM_ID" in team_stats_df.columns:
                 ranked = team_stats_df.sort_values("DEF_RATING", ascending=True).reset_index(drop=True)
                 row = ranked[ranked["TEAM_ID"] == opponent_team_id]
                 if row.empty:
                     return 0.0, None
                 rank = int(row.index[0]) + 1
-                adjustment = ((rank - 15.5) / 14.5) * 6.0
+                n = len(ranked)
+                adjustment = ((rank - (n + 1) / 2) / max(n / 2 - 0.5, 1)) * 6.0
                 return float(adjustment), rank
             return 0.0, None
 
         if "TEAM_ID" not in team_stats_df.columns:
             return 0.0, None
 
-        # Lower OPP_PTS (etc.) = better defense = rank 1
         ranked = team_stats_df.sort_values(opp_col, ascending=True).reset_index(drop=True)
         row = ranked[ranked["TEAM_ID"] == opponent_team_id]
         if row.empty:
             return 0.0, None
 
         rank = int(row.index[0]) + 1
-        # rank 1 (toughest) → -6pp; rank 30 (softest) → +6pp
-        adjustment = ((rank - 15.5) / 14.5) * 6.0
+        n = len(ranked)
+        adjustment = ((rank - (n + 1) / 2) / max(n / 2 - 0.5, 1)) * 6.0
         return float(adjustment), rank
 
     def score_home_away(
@@ -118,9 +125,7 @@ class FactorScorer:
         league_avg_pace: float = 99.5,
     ) -> float:
         """±3pp for pace above/below league average. Only applies to counting stats."""
-        counting_stats = {"Points", "Rebounds", "Assists", "3-PT Made",
-                          "Pts+Reb+Ast", "Pts+Ast", "Pts+Reb", "Reb+Ast"}
-        if stat_type not in counting_stats:
+        if stat_type not in self._counting_stats:
             return 0.0
         if team_stats_df is None or team_stats_df.empty or "PACE" not in team_stats_df.columns:
             return 0.0

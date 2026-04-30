@@ -26,12 +26,13 @@ class Corrections:
 
 class Calibrator:
 
-    def __init__(self, store: HistoryStore, min_days: int = 7) -> None:
+    def __init__(self, store: HistoryStore, min_days: int = 7, sport: str = "NBA") -> None:
         self._store = store
         self._min_days = min_days
+        self._sport = sport
 
     def compute_corrections(self, run_date: date) -> Corrections:
-        rows = self._store.get_evaluated_predictions(self._min_days)
+        rows = self._store.get_evaluated_predictions(self._min_days, sport=self._sport)
         if not rows:
             logger.info(
                 "Calibrator: fewer than %d days of evaluated data — using raw model",
@@ -43,10 +44,10 @@ class Calibrator:
 
         calibration_map = self._compute_calibration(rows)
         stat_type_bias = self._compute_stat_type_bias(rows)
-        current_weights = self._store.get_latest_factor_weights()
+        current_weights = self._store.get_latest_factor_weights(sport=self._sport)
         new_weights, contributions, sample_sizes = self._compute_factor_weights(rows, current_weights)
 
-        self._store.save_factor_weights(new_weights, contributions, sample_sizes, run_date)
+        self._store.save_factor_weights(new_weights, contributions, sample_sizes, run_date, sport=self._sport)
 
         logger.info(
             "Calibrator: cal_buckets=%d  stat_biases=%d  weights=%s",
