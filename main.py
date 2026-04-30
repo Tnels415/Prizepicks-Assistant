@@ -97,16 +97,8 @@ def main() -> int:
     props = pp_client.fetch_nba_props()
 
     if not props:
-        logger.warning("No PrizePicks props found for today.")
-        msg = (
-            f"No PrizePicks NBA props were available on {today.strftime('%B %d, %Y')}. "
-            "The market may not have opened yet or the API may be unavailable."
-        )
-        send(
-            f"NBA Prop Picks - {today.strftime('%B %d, %Y')} - No Props Available",
-            f"<p>{msg}</p>",
-            msg,
-        )
+        logger.warning("No props loaded — check props.json or PrizePicks API availability.")
+        # Instructions already printed by PrizePicksClient when props.json is missing/template
         return 0
 
     logger.info("Fetched %d props from PrizePicks", len(props))
