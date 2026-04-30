@@ -101,12 +101,31 @@ class PropAnalyzer:
         line = prop["line"]
         team_abbr = prop.get("team_abbr", "")
         position = prop.get("position", "")
+        event_home = prop.get("event_home_abbr", "")
+        event_away = prop.get("event_away_abbr", "")
 
         # Find player ID
         player_id = self._stats.find_player_id(player_name)
         if player_id is None:
             logger.warning("Skipping %s — player ID not found", player_name)
             return None
+
+        # Fetch game log early so we can derive team_abbr if missing
+        if player_name not in player_cache:
+            player_cache[player_name] = self._stats.get_player_game_log(player_id)
+        game_log = player_cache[player_name]
+
+        # Derive team_abbr from game log MATCHUP when Odds API didn't supply it
+        if not team_abbr and not game_log.empty and "MATCHUP" in game_log.columns:
+            matchup = str(game_log["MATCHUP"].iloc[0])
+            team_abbr = matchup.strip()[:3].upper()
+
+        # If still unknown, try each team in the event
+        if not team_abbr and (event_home or event_away):
+            for candidate in (event_home, event_away):
+                if candidate and self._determine_game_context(candidate):
+                    team_abbr = candidate
+                    break
 
         # Game context for today
         context = self._determine_game_context(team_abbr)
@@ -117,11 +136,6 @@ class PropAnalyzer:
         opponent_abbr = context["opponent_abbr"]
         opponent_id = context["opponent_id"]
         location = context["location"]
-
-        # Fetch game log (cached per player_id)
-        if player_name not in player_cache:
-            player_cache[player_name] = self._stats.get_player_game_log(player_id)
-        game_log = player_cache[player_name]
 
         if game_log.empty:
             logger.warning("Skipping %s — no game log data", player_name)

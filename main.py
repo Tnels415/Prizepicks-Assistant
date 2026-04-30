@@ -92,8 +92,8 @@ def main() -> int:
 
     logger.info("Games today: %d", len(games))
 
-    # --- PrizePicks props -----------------------------------------------
-    pp_client = PrizePicksClient()
+    # --- Prop lines (The Odds API → props.json fallback) ----------------
+    pp_client = PrizePicksClient(odds_api_key=cfg.get("odds_api_key"))
     props = pp_client.fetch_nba_props()
 
     if not props:

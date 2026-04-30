@@ -35,6 +35,7 @@ def load_config() -> dict:
         )
     return {
         "balldontlie_api_key": os.getenv("BALLDONTLIE_API_KEY"),
+        "odds_api_key": os.getenv("THE_ODDS_API_KEY"),
         "email_from": os.getenv("EMAIL_FROM"),
         "email_password": os.getenv("EMAIL_PASSWORD"),
         "email_to": os.getenv("EMAIL_TO", "tnelson8822@gmail.com"),
@@ -89,6 +90,39 @@ OPPONENT_STAT_COL = {
     "Pts+Ast": "OPP_PTS",
     "Pts+Reb": "OPP_PTS",
     "Reb+Ast": "OPP_REB",
+}
+
+NBA_TEAM_NAME_TO_ABBR = {
+    "Atlanta Hawks": "ATL",
+    "Boston Celtics": "BOS",
+    "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA",
+    "Chicago Bulls": "CHI",
+    "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL",
+    "Denver Nuggets": "DEN",
+    "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW",
+    "Houston Rockets": "HOU",
+    "Indiana Pacers": "IND",
+    "Los Angeles Clippers": "LAC",
+    "Los Angeles Lakers": "LAL",
+    "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA",
+    "Milwaukee Bucks": "MIL",
+    "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP",
+    "New York Knicks": "NYK",
+    "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL",
+    "Philadelphia 76ers": "PHI",
+    "Phoenix Suns": "PHX",
+    "Portland Trail Blazers": "POR",
+    "Sacramento Kings": "SAC",
+    "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR",
+    "Utah Jazz": "UTA",
+    "Washington Wizards": "WAS",
 }
 
 NBA_API_TIMEOUT = 30
