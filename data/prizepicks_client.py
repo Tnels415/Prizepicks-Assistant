@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
@@ -95,34 +95,69 @@ class PrizePicksClient:
     def _fetch_from_odds_api(self) -> list[dict]:
         try:
             events = self._get_todays_events()
-            if not events:
-                logger.info("The Odds API: no NBA events found for today")
-                return []
-
-            all_props: list[dict] = []
-            for event in events:
-                event_props = self._get_event_props(event)
-                all_props.extend(event_props)
-
-            remaining = self._get_requests_remaining()
-            logger.info(
-                "The Odds API: fetched %d props across %d games "
-                "(%s requests remaining this month)",
-                len(all_props), len(events), remaining,
-            )
-            return all_props
-
         except requests.exceptions.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 401:
-                logger.error("The Odds API: invalid API key — check THE_ODDS_API_KEY in .env")
-            elif exc.response is not None and exc.response.status_code == 422:
-                logger.warning("The Odds API: player props not yet available for today's games")
+            code = exc.response.status_code if exc.response is not None else "?"
+            if code == 401:
+                logger.error(
+                    "The Odds API: invalid API key (401) — "
+                    "check THE_ODDS_API_KEY in your .env file"
+                )
             else:
-                logger.warning("The Odds API HTTP error: %s", exc)
+                logger.warning("The Odds API events request failed (HTTP %s): %s", code, exc)
             return []
         except Exception as exc:
-            logger.warning("The Odds API fetch failed: %s", exc)
+            logger.warning("The Odds API events request failed: %s", exc)
             return []
+
+        if not events:
+            logger.warning(
+                "The Odds API: no NBA games found for today (%s). "
+                "This can happen early in the day — try running again after noon.",
+                date.today(),
+            )
+            return []
+
+        logger.info("The Odds API: found %d NBA game(s) today", len(events))
+
+        all_props: list[dict] = []
+        last_resp = None
+
+        for event in events:
+            home = event.get("home_team", "?")
+            away = event.get("away_team", "?")
+            try:
+                resp, event_props = self._get_event_props(event)
+                last_resp = resp
+                logger.info("  %-25s vs %-25s → %d props", away, home, len(event_props))
+                all_props.extend(event_props)
+            except requests.exceptions.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else "?"
+                if code == 422:
+                    logger.warning(
+                        "  %s vs %s — props not posted yet (HTTP 422). "
+                        "Lines are usually available 1–3 hours before tip-off.",
+                        away, home,
+                    )
+                else:
+                    logger.warning("  %s vs %s — HTTP %s, skipping", away, home, code)
+            except Exception as exc:
+                logger.warning("  %s vs %s — error: %s", away, home, exc)
+
+        remaining = (
+            last_resp.headers.get("x-requests-remaining", "?") if last_resp else "?"
+        )
+        logger.info(
+            "The Odds API: %d props fetched total  |  %s requests remaining this month",
+            len(all_props), remaining,
+        )
+        return all_props
+
+    @staticmethod
+    def _parse_commence_time(iso_str: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        except Exception:
+            return None
 
     def _get_todays_events(self) -> list[dict]:
         resp = requests.get(
@@ -132,10 +167,21 @@ class PrizePicksClient:
         )
         resp.raise_for_status()
         events = resp.json()
-        today = date.today().isoformat()
-        return [e for e in events if e.get("commence_time", "")[:10] == today]
 
-    def _get_event_props(self, event: dict) -> list[dict]:
+        # Use a rolling UTC window instead of a date string comparison.
+        # NBA games tip off as late as 10 PM ET = 2 AM UTC (next calendar day),
+        # so a naive date string match would miss late games entirely.
+        now_utc = datetime.now(timezone.utc)
+        window_start = now_utc - timedelta(hours=4)   # include in-progress games
+        window_end   = now_utc + timedelta(hours=20)  # up to ~10 PM local same day
+
+        return [
+            e for e in events
+            if (ct := self._parse_commence_time(e.get("commence_time", "")))
+            and window_start <= ct <= window_end
+        ]
+
+    def _get_event_props(self, event: dict) -> tuple[requests.Response, list[dict]]:
         resp = requests.get(
             f"{ODDS_API_BASE}/sports/basketball_nba/events/{event['id']}/odds",
             params={
@@ -147,7 +193,7 @@ class PrizePicksClient:
             timeout=20,
         )
         resp.raise_for_status()
-        return self._parse_event_odds(resp.json(), event)
+        return resp, self._parse_event_odds(resp.json(), event)
 
     def _parse_event_odds(self, data: dict, event: dict) -> list[dict]:
         home_full = data.get("home_team", "")
@@ -195,17 +241,6 @@ class PrizePicksClient:
             if key in book_map:
                 return book_map[key]
         return bookmakers[0] if bookmakers else None
-
-    def _get_requests_remaining(self) -> str:
-        try:
-            resp = requests.get(
-                f"{ODDS_API_BASE}/sports",
-                params={"apiKey": self._odds_api_key},
-                timeout=10,
-            )
-            return resp.headers.get("x-requests-remaining", "unknown")
-        except Exception:
-            return "unknown"
 
     # ------------------------------------------------------------------
     # Manual fallback — read from props.json
