@@ -16,7 +16,7 @@ Cron (daily 10 AM Eastern):
 import logging
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -25,7 +25,10 @@ from data.prizepicks_client import PrizePicksClient
 from data.schedule_client import ScheduleClient
 from data.nba_stats_client import NBAStatsClient
 from analysis.prop_analyzer import PropAnalyzer
-from email_sender.template import render_email_html, render_plain_text
+from learning.history_store import HistoryStore
+from learning.outcome_fetcher import OutcomeFetcher
+from learning.calibrator import Calibrator, Corrections
+from email_sender.template import render_email_html, render_plain_text, render_yesterday_section
 from email_sender.emailer import EmailSender
 
 
@@ -56,8 +59,31 @@ def main() -> int:
     start = time.time()
     today = date.today()
 
+    yesterday = today - timedelta(days=1)
+
     logger.info("=" * 60)
     logger.info("NBA Prop Analyzer starting — %s  Season: %s", today.isoformat(), NBA_SEASON)
+
+    # --- Learning layer (graceful degradation) --------------------------
+    store: HistoryStore | None = None
+    corrections: Corrections = Corrections()
+    yesterday_results: list = []
+    cumulative_stats: dict = {}
+
+    try:
+        store = HistoryStore()
+        fetcher = OutcomeFetcher(store)
+        n_evaluated = fetcher.evaluate_yesterday(yesterday)
+        logger.info("Evaluated %d picks from %s", n_evaluated, yesterday.isoformat())
+
+        calibrator = Calibrator(store)
+        corrections = calibrator.compute_corrections(today)
+
+        yesterday_results = store.get_results_for_date(yesterday)
+        cumulative_stats = store.get_cumulative_accuracy()
+    except Exception as exc:
+        logger.warning("Learning layer failed (%s) — running with raw model", exc)
+        store = None
 
     # --- Configuration --------------------------------------------------
     try:
@@ -105,7 +131,7 @@ def main() -> int:
 
     # --- Analysis -------------------------------------------------------
     stats_client = NBAStatsClient(balldontlie_api_key=cfg.get("balldontlie_api_key"))
-    analyzer = PropAnalyzer(stats_client, schedule)
+    analyzer = PropAnalyzer(stats_client, schedule, corrections=corrections)
 
     results = analyzer.analyze_all_props(props)
 
@@ -130,8 +156,19 @@ def main() -> int:
         f"NBA Prop Picks - {today.strftime('%B %d, %Y')} - "
         f"{len(results)} Directions Ranked"
     )
-    html_body = render_email_html(results, today, duration)
+    yest_html = render_yesterday_section(yesterday_results, cumulative_stats, yesterday)
+    html_body = render_email_html(results, today, duration, yesterday_section_html=yest_html)
     plain_body = render_plain_text(results, today)
+
+    # --- Save today's picks for tomorrow's evaluation -------------------
+    if store is not None:
+        try:
+            player_id_map = {r.player_name: stats_client.find_player_id(r.player_name)
+                             for r in results}
+            n_saved = store.save_predictions(results, today, player_id_map)
+            logger.info("Saved %d predictions to history.db", n_saved)
+        except Exception as exc:
+            logger.warning("Failed to save predictions: %s", exc)
 
     send(subject, html_body, plain_body)
 

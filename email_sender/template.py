@@ -4,10 +4,103 @@ from typing import List
 from analysis.prop_analyzer import PropResult
 
 
+def render_yesterday_section(
+    yesterday_results: list,
+    cumulative: dict,
+    yesterday_date: date,
+) -> str:
+    if not yesterday_results:
+        return ""
+
+    evaluated = [r for r in yesterday_results if r.get("correct") in (0, 1)]
+    dnp = [r for r in yesterday_results if r.get("correct") == -1]
+
+    if not evaluated:
+        return ""
+
+    n_correct = sum(1 for r in evaluated if r["correct"] == 1)
+    n_total = len(evaluated)
+    pct = round(n_correct / n_total * 100) if n_total else 0
+
+    cum_total = cumulative.get("total_evaluated", 0)
+    cum_correct = cumulative.get("total_correct", 0)
+    cum_pct = cumulative.get("accuracy_pct", 0.0)
+
+    score_color = "#28a745" if pct >= 60 else "#e67e22" if pct >= 50 else "#dc3545"
+
+    rows_html = ""
+    for r in sorted(yesterday_results, key=lambda x: x.get("rank", 99))[:10]:
+        correct = r.get("correct")
+        actual = r.get("actual_value")
+        if correct == -1:
+            icon = "&#8212;"
+            row_style = "background:#f8f9fa"
+            actual_str = "DNP"
+        elif correct == 1:
+            icon = "&#10003;"
+            row_style = "background:#d4f0da"
+            actual_str = f"{actual:.1f}" if actual is not None else "?"
+        elif correct == 0:
+            icon = "&#10007;"
+            row_style = "background:#fde8e8"
+            actual_str = f"{actual:.1f}" if actual is not None else "?"
+        else:
+            icon = "&#8230;"
+            row_style = ""
+            actual_str = "—"
+
+        dir_color = "#28a745" if r.get("direction") == "OVER" else "#e67e22"
+        rows_html += f"""
+      <tr style="{row_style}">
+        <td style="padding:6px 10px;font-weight:bold">{r.get('rank','')}</td>
+        <td style="padding:6px 10px">{r.get('player_name','')}
+          <span style="color:{dir_color};font-weight:bold;font-size:11px"> {r.get('direction','')}</span></td>
+        <td style="padding:6px 10px">{r.get('stat_type','')}</td>
+        <td style="padding:6px 10px;font-weight:bold">{r.get('line','')}</td>
+        <td style="padding:6px 10px">{r.get('predicted_value','')}</td>
+        <td style="padding:6px 10px">{r.get('hit_probability',''):.0f}%</td>
+        <td style="padding:6px 10px;font-weight:bold">{actual_str}</td>
+        <td style="padding:6px 10px;font-size:16px;text-align:center">{icon}</td>
+      </tr>"""
+
+    stat_accuracy = ""
+    for stat, data in cumulative.get("by_stat_type", {}).items():
+        stat_accuracy += f"<span style='margin-right:14px'><b>{stat}</b> {data['pct']}%</span>"
+
+    return f"""
+  <div style="padding:14px 20px;background:#fff8e1;border-left:4px solid #f0a500;margin-bottom:0">
+    <div style="font-weight:bold;font-size:14px;color:#333;margin-bottom:6px">
+      Yesterday's Results &mdash; {yesterday_date.strftime('%B %d, %Y')}
+    </div>
+    <div style="font-size:13px;margin-bottom:10px">
+      <span style="font-size:20px;font-weight:bold;color:{score_color}">{n_correct}/{n_total}</span>
+      <span style="color:#555;margin-left:6px">correct ({pct}% yesterday)</span>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <span style="color:#555">All-time: <b>{cum_correct}/{cum_total}</b> ({cum_pct}%)</span>
+      {f'&nbsp;&nbsp;|&nbsp;&nbsp;<span style="color:#999;font-size:11px">{len(dnp)} DNP excluded</span>' if dnp else ''}
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="background:#f0a500;color:#fff">
+        <th style="padding:5px 10px;text-align:left">#</th>
+        <th style="padding:5px 10px;text-align:left">Player</th>
+        <th style="padding:5px 10px;text-align:left">Prop</th>
+        <th style="padding:5px 10px;text-align:left">Line</th>
+        <th style="padding:5px 10px;text-align:left">Predicted</th>
+        <th style="padding:5px 10px;text-align:left">Prob</th>
+        <th style="padding:5px 10px;text-align:left">Actual</th>
+        <th style="padding:5px 10px;text-align:center">Result</th>
+      </tr>
+      {rows_html}
+    </table>
+    {f'<div style="margin-top:8px;font-size:11px;color:#777">Accuracy by stat type: {stat_accuracy}</div>' if stat_accuracy else ''}
+  </div>"""
+
+
 def render_email_html(
     results: List[PropResult],
     run_date: date,
     duration_secs: float,
+    yesterday_section_html: str = "",
 ) -> str:
     high_conf = [r for r in results if r.hit_probability > 65]
     n_games = len({r.opponent_team_abbr for r in results})
@@ -75,6 +168,8 @@ def render_email_html(
   <div class="topbox">
     <strong>Top 5 Today:</strong>&nbsp;&nbsp;{top_5_html}
   </div>
+
+  {yesterday_section_html}
 
   <table>
     <thead>

@@ -148,7 +148,16 @@ class FactorScorer:
         self,
         hit_rate_20: float,
         adjustments: list[float],
+        learned_weights: dict[str, float] | None = None,
     ) -> float:
         base = hit_rate_20 * 100.0
-        total = base + sum(adjustments)
+        if learned_weights:
+            from learning.history_store import FACTOR_NAMES
+            weighted_sum = sum(
+                adj * learned_weights.get(FACTOR_NAMES[i], 1.0)
+                for i, adj in enumerate(adjustments)
+            )
+        else:
+            weighted_sum = sum(adjustments)
+        total = base + weighted_sum
         return float(max(5.0, min(95.0, total)))

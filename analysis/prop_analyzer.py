@@ -50,11 +50,13 @@ class PropAnalyzer:
         self,
         stats_client: NBAStatsClient,
         schedule_client: ScheduleClient,
+        corrections=None,  # learning.calibrator.Corrections | None
     ):
         self._stats = stats_client
         self._schedule = schedule_client
         self._calc = HistoricalStatsCalculator()
         self._scorer = FactorScorer()
+        self._corrections = corrections
         self._team_stats: pd.DataFrame | None = None
         self._team_abbr_to_id: dict[str, int] = {}
         self._team_id_to_abbr: dict[int, str] = {}
@@ -178,7 +180,23 @@ class PropAnalyzer:
 
         adjustments = [delta_season, delta_form, delta_h2h, delta_opp,
                        delta_loc, delta_rest, delta_pace]
-        over_prob = self._scorer.compute_composite_probability(hit_rate_20, adjustments)
+
+        learned_weights = (
+            self._corrections.factor_weights
+            if self._corrections and self._corrections.has_sufficient_data
+            else None
+        )
+        over_prob = self._scorer.compute_composite_probability(
+            hit_rate_20, adjustments, learned_weights=learned_weights
+        )
+
+        # Apply calibration and stat-type bias corrections from historical data
+        if self._corrections and self._corrections.has_sufficient_data:
+            bucket_mid = int(over_prob // 10) * 10 + 5
+            cal_delta = self._corrections.calibration_map.get(bucket_mid, 0.0)
+            bias_delta = self._corrections.stat_type_bias.get(stat_type, 0.0)
+            over_prob = max(5.0, min(95.0, over_prob + cal_delta + bias_delta))
+
         under_prob = 100.0 - over_prob
 
         predicted = self._compute_predicted_value(
