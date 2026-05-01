@@ -137,8 +137,15 @@ class PropAnalyzer:
                     break
 
         context = self._determine_game_context(team_abbr)
+        if context is None and (event_home or event_away):
+            # Schedule lookup failed (API down or abbr mismatch) — derive context
+            # directly from the Odds API event data we already have.
+            context = self._context_from_event_data(team_abbr, event_home, event_away)
         if context is None:
-            logger.debug("Skipping %s — no game today for team %s", player_name, team_abbr)
+            logger.info(
+                "Skipping %s — no game today for team '%s' (event: %s @ %s)",
+                player_name, team_abbr, event_away, event_home,
+            )
             return None
 
         opponent_abbr = context["opponent_abbr"]
@@ -263,6 +270,34 @@ class PropAnalyzer:
                     "opponent_id": game["home_team_id"],
                     "location": "Away",
                 }
+        return None
+
+    def _context_from_event_data(
+        self,
+        team_abbr: str,
+        event_home: str,
+        event_away: str,
+    ) -> dict | None:
+        """Build game context from Odds API event fields when schedule lookup fails.
+
+        This is a schedule-independent fallback: if the schedule API is down or
+        abbreviations don't align, we still know which teams are playing from the
+        prop event itself.
+        """
+        if not event_home or not event_away:
+            return None
+
+        ta = team_abbr.upper() if team_abbr else ""
+        eh = event_home.upper()
+        ea = event_away.upper()
+
+        if ta == eh:
+            opp_id = self._team_abbr_to_id.get(ea, 0)
+            return {"opponent_abbr": event_away, "opponent_id": opp_id, "location": "Home"}
+        if ta == ea:
+            opp_id = self._team_abbr_to_id.get(eh, 0)
+            return {"opponent_abbr": event_home, "opponent_id": opp_id, "location": "Away"}
+
         return None
 
     @staticmethod
