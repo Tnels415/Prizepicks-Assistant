@@ -86,33 +86,44 @@ class NBAStatsClient:
         return df
 
     def _fetch_game_log_nba_api(self, player_id: int) -> pd.DataFrame | None:
-        try:
-            from nba_api.stats.endpoints import playergamelog
-            endpoint = self._nba_api_call(
-                playergamelog.PlayerGameLog,
-                player_id=player_id,
-                season=NBA_SEASON,
-                season_type_all_star=NBA_SEASON_TYPE,
-                timeout=NBA_API_TIMEOUT,
-            )
-            if endpoint is None:
-                return None
-            df = endpoint.get_data_frames()[0]
-            if df.empty:
-                return None
-            df = df.copy()
-            # Parse location from MATCHUP: "LAL vs. GSW" = home, "LAL @ GSW" = away
-            df["location"] = df["MATCHUP"].apply(
-                lambda m: "Home" if "vs." in str(m) else "Away"
-            )
-            # Parse opponent abbreviation from MATCHUP
-            df["opponent_abbr"] = df["MATCHUP"].apply(self._parse_opponent_abbr)
-            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors="coerce")
-            df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
-            return df
-        except Exception as exc:
-            logger.warning("nba_api game log failed for player %d: %s", player_id, exc)
+        # Fetch both Regular Season and Playoffs so the app works correctly
+        # regardless of the current phase (regular season, play-in, or playoffs).
+        from nba_api.stats.endpoints import playergamelog
+        all_dfs = []
+        for season_type in ("Regular Season", "Playoffs"):
+            try:
+                endpoint = self._nba_api_call(
+                    playergamelog.PlayerGameLog,
+                    player_id=player_id,
+                    season=NBA_SEASON,
+                    season_type_all_star=season_type,
+                    timeout=NBA_API_TIMEOUT,
+                )
+                if endpoint is None:
+                    continue
+                df = endpoint.get_data_frames()[0]
+                if df.empty:
+                    continue
+                df = df.copy()
+                df["location"] = df["MATCHUP"].apply(
+                    lambda m: "Home" if "vs." in str(m) else "Away"
+                )
+                df["opponent_abbr"] = df["MATCHUP"].apply(self._parse_opponent_abbr)
+                df["GAME_DATE"] = pd.to_datetime(
+                    df["GAME_DATE"], format="%b %d, %Y", errors="coerce"
+                )
+                all_dfs.append(df)
+            except Exception as exc:
+                logger.debug(
+                    "nba_api game log (%s) failed for player %d: %s",
+                    season_type, player_id, exc,
+                )
+
+        if not all_dfs:
             return None
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined = combined.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+        return combined
 
     def _fetch_game_log_bdl(self, player_id: int) -> pd.DataFrame | None:
         if not self._bdl_key:
@@ -150,7 +161,17 @@ class NBAStatsClient:
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
             return df
         except Exception as exc:
-            logger.warning("balldontlie game log failed for player %d: %s", player_id, exc)
+            # 401 means the BallDontLie API key is expired/invalid — log once at debug
+            # since nba_api is the primary source and BDL is only a fallback.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 401:
+                logger.debug(
+                    "balldontlie 401 for player %d — API key may be expired "
+                    "(check BALLDONTLIE_API_KEY in .env). nba_api is the primary source.",
+                    player_id,
+                )
+            else:
+                logger.debug("balldontlie game log failed for player %d: %s", player_id, exc)
             return None
 
     @staticmethod
