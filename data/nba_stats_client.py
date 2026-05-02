@@ -23,11 +23,19 @@ _PLAYER_CACHE: dict[int, pd.DataFrame] = {}
 _TEAM_STATS_CACHE: pd.DataFrame | None = None
 _PLAYER_USAGE_CACHE: dict[int, float] = {}
 
+# Set to True after the first BallDontLie 401 so we stop hammering a
+# paid-only endpoint for every remaining player in the same run.
+_BDL_GAME_LOG_DISABLED: bool = False
+
 
 class NBAStatsClient:
 
     def __init__(self, balldontlie_api_key: str | None = None):
         self._bdl_key = balldontlie_api_key
+        # nba_api player_id → original search name, populated by find_player_id.
+        # Needed because BallDontLie uses its own numeric ID scheme that differs
+        # from nba_api IDs; a name-based search is required to get the correct BDL ID.
+        self._id_to_name: dict[int, str] = {}
 
     # -------------------------------------------------------------------------
     # Player ID lookup
@@ -39,7 +47,9 @@ class NBAStatsClient:
         if matches:
             active = [p for p in matches if p.get("is_active")]
             best = active[0] if active else matches[0]
-            return best["id"]
+            pid = best["id"]
+            self._id_to_name[pid] = player_name
+            return pid
 
         # Fuzzy fallback: try matching by last name
         name_parts = player_name.strip().split()
@@ -49,7 +59,9 @@ class NBAStatsClient:
             if candidates:
                 active = [p for p in candidates if p.get("is_active")]
                 best = active[0] if active else candidates[0]
-                return best["id"]
+                pid = best["id"]
+                self._id_to_name[pid] = player_name
+                return pid
 
         # balldontlie fallback
         if self._bdl_key:
@@ -78,7 +90,9 @@ class NBAStatsClient:
 
         df = self._fetch_game_log_nba_api(player_id)
         if df is None or df.empty:
-            df = self._fetch_game_log_bdl(player_id)
+            # Look up the original search name so BallDontLie can find its own ID.
+            player_name = self._id_to_name.get(player_id, "")
+            df = self._fetch_game_log_bdl(player_id, player_name)
         if df is None:
             df = pd.DataFrame()
 
@@ -125,14 +139,30 @@ class NBAStatsClient:
         combined = combined.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
         return combined
 
-    def _fetch_game_log_bdl(self, player_id: int) -> pd.DataFrame | None:
-        if not self._bdl_key:
+    def _fetch_game_log_bdl(self, player_id: int, player_name: str = "") -> pd.DataFrame | None:
+        global _BDL_GAME_LOG_DISABLED
+        if not self._bdl_key or _BDL_GAME_LOG_DISABLED:
             return None
+
+        # BallDontLie uses its own player ID scheme that is completely different
+        # from nba_api (stats.nba.com) IDs.  We must search BDL by name to get
+        # the correct BDL player ID before querying the stats endpoint.
+        if not player_name:
+            logger.debug(
+                "BallDontLie fallback skipped for player %d — name unknown", player_id
+            )
+            return None
+
+        bdl_player_id = self._bdl_find_player(player_name)
+        if bdl_player_id is None:
+            logger.debug("BallDontLie: '%s' not found — skipping BDL game log", player_name)
+            return None
+
         try:
             from config import NBA_SEASON_YEAR
             records = self._bdl_paginate(
                 "/stats",
-                {"player_ids[]": player_id, "seasons[]": NBA_SEASON_YEAR, "per_page": 100},
+                {"player_ids[]": bdl_player_id, "seasons[]": NBA_SEASON_YEAR, "per_page": 100},
             )
             if not records:
                 return None
@@ -161,17 +191,18 @@ class NBAStatsClient:
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
             return df
         except Exception as exc:
-            # 401 means the BallDontLie API key is expired/invalid — log once at debug
-            # since nba_api is the primary source and BDL is only a fallback.
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status == 401:
-                logger.debug(
-                    "balldontlie 401 for player %d — API key may be expired "
-                    "(check BALLDONTLIE_API_KEY in .env). nba_api is the primary source.",
-                    player_id,
+                # Disable BDL game-log for the rest of this run and log once at
+                # WARNING so the user knows why it stopped working.
+                _BDL_GAME_LOG_DISABLED = True
+                logger.warning(
+                    "BallDontLie stats endpoint requires a paid plan (HTTP 401). "
+                    "BDL game-log fallback disabled for this run — nba_api is the primary source. "
+                    "To suppress this warning, remove BALLDONTLIE_API_KEY from .env."
                 )
             else:
-                logger.debug("balldontlie game log failed for player %d: %s", player_id, exc)
+                logger.debug("BallDontLie game log failed for '%s': %s", player_name, exc)
             return None
 
     @staticmethod
