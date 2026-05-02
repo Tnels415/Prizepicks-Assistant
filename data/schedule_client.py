@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 _TEAM_ABBR_TO_ID: dict[str, int] = {}
 _TEAM_ID_TO_ABBR: dict[int, str] = {}
 
+# Per-sport schedule cache keyed by sport_key; reset when the date changes.
+_SCHEDULE_CACHE: dict[str, list[dict]] = {}
+_SCHEDULE_CACHE_DATE: date | None = None
+
 
 def _build_nba_team_maps() -> None:
     global _TEAM_ABBR_TO_ID, _TEAM_ID_TO_ABBR
@@ -34,17 +38,32 @@ class ScheduleClient:
     def get_todays_games(self, sport_key: str = "basketball_nba") -> list[dict]:
         """Return today's games for the given sport. Game dicts have keys:
             game_id, home_team_abbr, home_team_id, away_team_abbr, away_team_id, game_status
+
+        Results are cached for the calendar day so repeated calls (e.g. from
+        main.py and then from PropAnalyzer) hit the network only once.
         """
+        global _SCHEDULE_CACHE, _SCHEDULE_CACHE_DATE
+        today = date.today()
+        if _SCHEDULE_CACHE_DATE != today:
+            _SCHEDULE_CACHE = {}
+            _SCHEDULE_CACHE_DATE = today
+        if sport_key in _SCHEDULE_CACHE:
+            return _SCHEDULE_CACHE[sport_key]
+
         if sport_key == "basketball_nba":
-            return self._get_nba_games()
-        if sport_key == "icehockey_nhl":
-            return self._get_nhl_games()
-        if sport_key == "americanfootball_nfl":
-            return self._get_nfl_games()
-        if sport_key == "baseball_mlb":
-            return self._get_mlb_games()
-        logger.warning("ScheduleClient: unknown sport_key '%s'", sport_key)
-        return []
+            games = self._get_nba_games()
+        elif sport_key == "icehockey_nhl":
+            games = self._get_nhl_games()
+        elif sport_key == "americanfootball_nfl":
+            games = self._get_nfl_games()
+        elif sport_key == "baseball_mlb":
+            games = self._get_mlb_games()
+        else:
+            logger.warning("ScheduleClient: unknown sport_key '%s'", sport_key)
+            games = []
+
+        _SCHEDULE_CACHE[sport_key] = games
+        return games
 
     # ------------------------------------------------------------------
     # NBA

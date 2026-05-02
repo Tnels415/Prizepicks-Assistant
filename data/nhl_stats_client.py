@@ -51,10 +51,18 @@ class NHLStatsClient(BaseStatsClient):
             name_lower = player_name.lower()
             for r in results:
                 if r.get("name", "").lower() == name_lower:
-                    return r.get("playerId")
+                    pid = r.get("playerId")
+                    if pid is not None:
+                        return pid
 
-            # Accept first result
-            return results[0].get("playerId")
+            # Accept first result that has a playerId
+            for r in results:
+                pid = r.get("playerId")
+                if pid is not None:
+                    return pid
+
+            logger.warning("NHL player search: results for '%s' missing playerId field", player_name)
+            return None
         except Exception as exc:
             logger.warning("NHL player search failed for '%s': %s", player_name, exc)
             return None

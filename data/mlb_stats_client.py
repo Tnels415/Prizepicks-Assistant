@@ -60,9 +60,13 @@ class MLBStatsClient(BaseStatsClient):
             return self._game_log_cache[player_id]
 
         year = date.today().year
-        hitting_df = self._fetch_group(player_id, year, "hitting")
+        # Fetch regular season + postseason so the log is complete during October playoffs.
+        hitting_dfs = [self._fetch_group(player_id, year, "hitting", gt) for gt in ("R", "P")]
         time.sleep(0.3)
-        pitching_df = self._fetch_group(player_id, year, "pitching")
+        pitching_dfs = [self._fetch_group(player_id, year, "pitching", gt) for gt in ("R", "P")]
+
+        hitting_df = pd.concat([d for d in hitting_dfs if not d.empty], ignore_index=True) if any(not d.empty for d in hitting_dfs) else pd.DataFrame()
+        pitching_df = pd.concat([d for d in pitching_dfs if not d.empty], ignore_index=True) if any(not d.empty for d in pitching_dfs) else pd.DataFrame()
 
         if hitting_df.empty and pitching_df.empty:
             df = pd.DataFrame()
@@ -92,6 +96,7 @@ class MLBStatsClient(BaseStatsClient):
         player_id: int,
         year: int,
         group: str,
+        game_type: str = "R",
     ) -> pd.DataFrame:
         try:
             resp = requests.get(
@@ -100,7 +105,7 @@ class MLBStatsClient(BaseStatsClient):
                     "stats": "gameLog",
                     "season": year,
                     "group": group,
-                    "gameType": "R",
+                    "gameType": game_type,
                 },
                 timeout=15,
             )
@@ -110,7 +115,7 @@ class MLBStatsClient(BaseStatsClient):
             data = resp.json()
             splits = (data.get("stats") or [{}])[0].get("splits", [])
         except Exception as exc:
-            logger.debug("MLB game log (%s) failed for player %d: %s", group, player_id, exc)
+            logger.debug("MLB game log (%s/%s) failed for player %d: %s", group, game_type, player_id, exc)
             return pd.DataFrame()
 
         rows = []

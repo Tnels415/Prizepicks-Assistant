@@ -171,6 +171,13 @@ def main() -> int:
                 sport_results[0].direction,
                 sport_results[0].hit_probability,
             )
+        else:
+            logger.warning(
+                "%s: 0 directions ranked from %d props loaded — "
+                "all players were skipped (no game log data, player ID not found, "
+                "or game context mismatch). Check logs above for per-player details.",
+                sport_name, len(props),
+            )
 
         # Save today's picks for tomorrow's evaluation
         if store is not None and sport_results:

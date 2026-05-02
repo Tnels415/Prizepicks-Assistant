@@ -80,26 +80,31 @@ class PropAnalyzer:
 
         results: list[PropResult] = []
         seen_players: dict[str, pd.DataFrame] = {}
+        n_skipped = 0
 
         for prop in props:
             try:
                 prop_results = self._analyze_single_prop(prop, seen_players)
                 if prop_results:
                     results.extend(prop_results)
+                else:
+                    n_skipped += 1
             except Exception as exc:
                 logger.error(
                     "Unexpected error analyzing %s %s: %s",
                     prop.get("player_name"), prop.get("stat_type"), exc,
                     exc_info=True,
                 )
+                n_skipped += 1
 
         results.sort(key=lambda r: r.hit_probability, reverse=True)
         for i, r in enumerate(results, 1):
             r.rank = i
 
+        unique_players = len(results) // 2 if results else 0
         logger.info(
-            "%s analysis complete: %d prop directions ranked",
-            self._sport["name"], len(results),
+            "%s analysis complete: %d players ranked (%d prop directions)  |  %d props skipped",
+            self._sport["name"], unique_players, len(results), n_skipped,
         )
         return results
 
