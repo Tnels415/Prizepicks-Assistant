@@ -238,13 +238,13 @@ SPORT_CONFIG: dict[str, dict] = {
         "active_months": [10, 11, 12, 1, 2, 3, 4, 5, 6],
         "markets": [
             "player_points", "player_goals", "player_assists",
-            "player_shots_on_target", "player_power_play_points",
+            "player_shots_on_goal", "player_power_play_points",
         ],
         "market_to_stat": {
             "player_points": "Points",
             "player_goals": "Goals",
             "player_assists": "Assists",
-            "player_shots_on_target": "Shots on Goal",
+            "player_shots_on_goal": "Shots on Goal",
             "player_power_play_points": "Power Play Points",
         },
         "prop_stat_map": {

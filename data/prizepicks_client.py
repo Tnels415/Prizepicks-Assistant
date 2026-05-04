@@ -122,11 +122,23 @@ class OddsAPIClient:
             except requests.exceptions.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else "?"
                 if code == 422:
-                    logger.warning(
-                        "  %s vs %s — props not posted yet (HTTP 422). "
-                        "Lines usually available 1–3 hours before tip-off.",
-                        away, home,
-                    )
+                    # Batch request failed — try each market individually so one
+                    # bad/unavailable market key doesn't block all the others.
+                    recovered = self._get_event_props_individually(event, sport_config)
+                    if recovered:
+                        logger.info(
+                            "  %-25s vs %-25s → %d props (individual market fallback)",
+                            away, home, len(recovered),
+                        )
+                        all_props.extend(recovered)
+                    else:
+                        try:
+                            detail = exc.response.json().get("message", exc.response.text[:120])
+                        except Exception:
+                            detail = "props not yet posted or market unavailable on your plan"
+                        logger.warning(
+                            "  %s vs %s — HTTP 422: %s", away, home, detail
+                        )
                 else:
                     logger.warning("  %s vs %s — HTTP %s, skipping", away, home, code)
             except Exception as exc:
@@ -137,6 +149,13 @@ class OddsAPIClient:
             "The Odds API (%s): %d props total  |  %s requests remaining this month",
             sport_name, len(all_props), remaining,
         )
+        if not all_props and events:
+            logger.warning(
+                "The Odds API returned 0 %s player props across %d game(s). "
+                "Possible causes: (1) props not yet posted — try running after noon; "
+                "(2) player prop markets not available on your current Odds API plan.",
+                sport_name, len(events),
+            )
         return all_props
 
     def _get_todays_events(self, sport_key: str) -> list[dict]:
@@ -177,6 +196,30 @@ class OddsAPIClient:
         )
         resp.raise_for_status()
         return resp, self._parse_event_odds(resp.json(), event, sport_config)
+
+    def _get_event_props_individually(
+        self,
+        event: dict,
+        sport_config: dict,
+    ) -> list[dict]:
+        """Try each market separately and merge results. Used as 422 fallback."""
+        combined: dict[tuple, dict] = {}
+        for market_key in sport_config["markets"]:
+            single_cfg = dict(sport_config, markets=[market_key])
+            try:
+                _, props = self._get_event_props(event, single_cfg)
+                for p in props:
+                    key = (p["player_name"], p["stat_type"])
+                    combined[key] = p
+            except requests.exceptions.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else "?"
+                logger.debug(
+                    "  Market '%s' returned HTTP %s for event %s — skipping",
+                    market_key, code, event.get("id", "?"),
+                )
+            except Exception as exc:
+                logger.debug("  Market '%s' error: %s", market_key, exc)
+        return list(combined.values())
 
     def _parse_event_odds(
         self,
