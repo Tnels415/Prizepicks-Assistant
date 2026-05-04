@@ -45,8 +45,6 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_predictions_date
     ON predictions(date);
-CREATE INDEX IF NOT EXISTS idx_predictions_sport
-    ON predictions(sport);
 
 CREATE TABLE IF NOT EXISTS factor_weights (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
