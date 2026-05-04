@@ -225,7 +225,7 @@ class NBAStatsClient:
                 season=NBA_SEASON,
                 season_type_playoffs="Regular Season",
                 measure_type_detailed_defense="Base",
-                per_mode_simple="PerGame",
+                per_mode_detailed="PerGame",
                 timeout=NBA_API_TIMEOUT,
             )
             if endpoint is None:
@@ -301,7 +301,7 @@ class NBAStatsClient:
                 season=NBA_SEASON,
                 season_type_all_star=NBA_SEASON_TYPE,
                 measure_type_detailed_defense=measure_type,
-                per_mode_simple="PerGame",
+                per_mode_detailed="PerGame",
                 timeout=NBA_API_TIMEOUT,
             )
             if endpoint is None:
@@ -328,7 +328,7 @@ class NBAStatsClient:
                 season=NBA_SEASON,
                 season_type_all_star=NBA_SEASON_TYPE,
                 measure_type_detailed_defense="Advanced",
-                per_mode_simple="PerGame",
+                per_mode_detailed="PerGame",
                 timeout=NBA_API_TIMEOUT,
             )
             if endpoint is None:
