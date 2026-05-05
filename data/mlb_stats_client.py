@@ -13,6 +13,37 @@ logger = logging.getLogger(__name__)
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
+# Module-level player cache: lower-case full name → player_id.
+# Built once per process from the season-wide active roster endpoint;
+# avoids the deprecated people/search endpoint (now returns 404).
+_MLB_PLAYER_DB: dict[str, int] = {}
+_MLB_DB_LOADED: bool = False
+
+
+def _build_mlb_player_db() -> None:
+    """Fetch all active MLB players for the current season in one API call."""
+    global _MLB_PLAYER_DB, _MLB_DB_LOADED
+    _MLB_DB_LOADED = True
+    year = date.today().year
+    try:
+        resp = requests.get(
+            f"{MLB_API}/sports/1/players",
+            params={"season": year, "gameType": "R"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        people = resp.json().get("people", [])
+        db: dict[str, int] = {}
+        for p in people:
+            name = p.get("fullName", "")
+            pid = p.get("id")
+            if name and pid:
+                db[name.lower()] = pid
+        _MLB_PLAYER_DB = db
+        logger.info("MLB player DB built: %d active players for %d season", len(db), year)
+    except Exception as exc:
+        logger.warning("MLB player DB build failed: %s", exc)
+
 
 class MLBStatsClient(BaseStatsClient):
 
@@ -28,28 +59,44 @@ class MLBStatsClient(BaseStatsClient):
         if player_name in self._player_id_cache:
             return self._player_id_cache[player_name]
 
-        player_id = self._search_player(player_name)
+        player_id = self._lookup_player(player_name)
         self._player_id_cache[player_name] = player_id
         return player_id
 
-    def _search_player(self, player_name: str) -> int | None:
-        try:
-            resp = requests.get(
-                f"{MLB_API}/people/search",
-                params={"names": player_name, "sportId": 1},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            people = resp.json().get("people", [])
-            if not people:
-                logger.warning("MLB: no results for player '%s'", player_name)
-                return None
-            # Prefer active players
-            active = [p for p in people if p.get("active", False)]
-            return (active[0] if active else people[0])["id"]
-        except Exception as exc:
-            logger.warning("MLB player search failed for '%s': %s", player_name, exc)
+    def _lookup_player(self, player_name: str) -> int | None:
+        if not _MLB_DB_LOADED:
+            _build_mlb_player_db()
+
+        if not _MLB_PLAYER_DB:
+            logger.warning("MLB player DB is empty — cannot find '%s'", player_name)
             return None
+
+        name_lower = player_name.strip().lower()
+
+        # 1. Exact full-name match
+        if name_lower in _MLB_PLAYER_DB:
+            return _MLB_PLAYER_DB[name_lower]
+
+        # 2. First + last name partial match (handles middle names / suffixes)
+        parts = name_lower.split()
+        if len(parts) >= 2:
+            first, last = parts[0], parts[-1]
+            candidates = {
+                k: v for k, v in _MLB_PLAYER_DB.items()
+                if k.endswith(last) and k.startswith(first)
+            }
+            if len(candidates) == 1:
+                return next(iter(candidates.values()))
+            if len(candidates) > 1:
+                return min(candidates.items(), key=lambda kv: abs(len(kv[0]) - len(name_lower)))[1]
+
+            # 3. Last-name-only fallback
+            last_only = {k: v for k, v in _MLB_PLAYER_DB.items() if k.endswith(f" {last}")}
+            if len(last_only) == 1:
+                return next(iter(last_only.values()))
+
+        logger.warning("MLB: player '%s' not found in player DB", player_name)
+        return None
 
     # -------------------------------------------------------------------------
     # Game log

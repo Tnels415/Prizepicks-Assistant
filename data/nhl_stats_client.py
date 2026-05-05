@@ -13,7 +13,53 @@ from data.base_stats_client import BaseStatsClient
 logger = logging.getLogger(__name__)
 
 NHL_WEB_API = "https://api-web.nhle.com/v1"
-NHL_SEARCH_API = "https://search.d3.nhle.com/api/v1"
+
+# All 32 current NHL franchises — used to build the player DB from rosters.
+_NHL_TEAMS = [
+    "ANA", "BOS", "BUF", "CGY", "CAR", "CHI", "COL", "CBJ",
+    "DAL", "DET", "EDM", "FLA", "LAK", "MIN", "MTL", "NSH",
+    "NJD", "NYI", "NYR", "OTT", "PHI", "PIT", "SJS", "SEA",
+    "STL", "TBL", "TOR", "UTA", "VAN", "VGK", "WSH", "WPG",
+]
+
+# Module-level player cache: lower-case full name → player_id.
+# Built once per process from team rosters; avoids the broken search endpoint.
+_NHL_PLAYER_DB: dict[str, int] = {}
+_NHL_DB_LOADED: bool = False
+
+
+def _build_nhl_player_db() -> None:
+    """Populate _NHL_PLAYER_DB from every team's current roster."""
+    global _NHL_PLAYER_DB, _NHL_DB_LOADED
+    _NHL_DB_LOADED = True  # set early so we don't retry on partial failure
+    db: dict[str, int] = {}
+    loaded = 0
+    for abbrev in _NHL_TEAMS:
+        try:
+            resp = requests.get(
+                f"{NHL_WEB_API}/roster/{abbrev}/current",
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.debug("NHL roster %s returned %d", abbrev, resp.status_code)
+                continue
+            data = resp.json()
+            for group in ("forwards", "defensemen", "goalies"):
+                for player in data.get(group, []):
+                    pid = player.get("id")
+                    first = player.get("firstName", {}).get("default", "")
+                    last = player.get("lastName", {}).get("default", "")
+                    if pid and (first or last):
+                        db[f"{first} {last}".strip().lower()] = pid
+            loaded += 1
+            time.sleep(0.05)
+        except Exception as exc:
+            logger.debug("NHL roster fetch failed for %s: %s", abbrev, exc)
+    _NHL_PLAYER_DB = db
+    logger.info(
+        "NHL player DB built from %d/%d team rosters — %d players indexed",
+        loaded, len(_NHL_TEAMS), len(db),
+    )
 
 
 class NHLStatsClient(BaseStatsClient):
@@ -30,42 +76,45 @@ class NHLStatsClient(BaseStatsClient):
         if player_name in self._player_id_cache:
             return self._player_id_cache[player_name]
 
-        player_id = self._search_player(player_name)
+        player_id = self._lookup_player(player_name)
         self._player_id_cache[player_name] = player_id
         return player_id
 
-    def _search_player(self, player_name: str) -> int | None:
-        try:
-            resp = requests.get(
-                f"{NHL_SEARCH_API}/search",
-                params={"q": player_name, "type": "player", "culture": "en-us", "limit": 10},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            results = resp.json()
-            if not results:
-                logger.warning("NHL: no results for player '%s'", player_name)
-                return None
+    def _lookup_player(self, player_name: str) -> int | None:
+        if not _NHL_DB_LOADED:
+            _build_nhl_player_db()
 
-            # Prefer exact name match
-            name_lower = player_name.lower()
-            for r in results:
-                if r.get("name", "").lower() == name_lower:
-                    pid = r.get("playerId")
-                    if pid is not None:
-                        return pid
-
-            # Accept first result that has a playerId
-            for r in results:
-                pid = r.get("playerId")
-                if pid is not None:
-                    return pid
-
-            logger.warning("NHL player search: results for '%s' missing playerId field", player_name)
+        if not _NHL_PLAYER_DB:
+            logger.warning("NHL player DB is empty — cannot find '%s'", player_name)
             return None
-        except Exception as exc:
-            logger.warning("NHL player search failed for '%s': %s", player_name, exc)
-            return None
+
+        name_lower = player_name.strip().lower()
+
+        # 1. Exact full-name match
+        if name_lower in _NHL_PLAYER_DB:
+            return _NHL_PLAYER_DB[name_lower]
+
+        # 2. First-name + last-name partial match (handles middle initials, etc.)
+        parts = name_lower.split()
+        if len(parts) >= 2:
+            first, last = parts[0], parts[-1]
+            candidates = {
+                k: v for k, v in _NHL_PLAYER_DB.items()
+                if k.endswith(last) and k.startswith(first)
+            }
+            if len(candidates) == 1:
+                return next(iter(candidates.values()))
+            if len(candidates) > 1:
+                # Prefer the entry whose name length is closest to the query
+                return min(candidates.items(), key=lambda kv: abs(len(kv[0]) - len(name_lower)))[1]
+
+            # 3. Last-name-only fallback (risky but better than nothing)
+            last_only = {k: v for k, v in _NHL_PLAYER_DB.items() if k.endswith(f" {last}")}
+            if len(last_only) == 1:
+                return next(iter(last_only.values()))
+
+        logger.warning("NHL: player '%s' not found in roster DB", player_name)
+        return None
 
     # -------------------------------------------------------------------------
     # Game log
