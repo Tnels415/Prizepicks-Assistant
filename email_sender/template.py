@@ -132,12 +132,19 @@ def render_email_html(
         cfg = SPORT_CONFIG.get(sport_name, {})
         emoji = cfg.get("emoji", "")
         full_name = cfg.get("full_name", sport_name)
-        rows_html = "\n".join(_render_row(r) for r in sport_results)
-        sport_sections_html += f"""
-  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
-    {emoji} {full_name} &mdash; {len(sport_results)} Directions Ranked
+
+        overs  = [r for r in sport_results if r.direction == "OVER"]
+        unders = [r for r in sport_results if r.direction == "UNDER"]
+
+        def _direction_table(picks, label, header_color):
+            if not picks:
+                return ""
+            rows = "\n".join(_render_row(r) for r in picks)
+            return f"""
+  <div style="padding:8px 20px 4px;background:{header_color};color:#fff;font-size:12px;font-weight:bold">
+    {label} &mdash; {len(picks)} Picks
   </div>
-  <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+  <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
     <thead>
       <tr>
         <th>#</th><th>Player</th><th>Team</th><th>Direction</th>
@@ -146,11 +153,21 @@ def render_email_html(
       </tr>
     </thead>
     <tbody>
-{rows_html}
+{rows}
     </tbody>
   </table>"""
 
+        sport_sections_html += f"""
+  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
+    {emoji} {full_name}
+  </div>"""
+        sport_sections_html += _direction_table(overs,  "&#9650; Top 10 Overs",  "#28a745")
+        sport_sections_html += _direction_table(unders, "&#9660; Top 10 Unders", "#e67e22")
+        sport_sections_html += '<div style="margin-bottom:12px"></div>'
+
     total_props = len(all_results)
+    n_overs  = sum(1 for r in all_results if r.direction == "OVER")
+    n_unders = sum(1 for r in all_results if r.direction == "UNDER")
     n_sports = len([s for s, r in results_by_sport.items() if r])
 
     return f"""<!DOCTYPE html>
@@ -194,7 +211,7 @@ def render_email_html(
   <div class="header">
     <h1>Multi-Sport Prop Picks &mdash; {date_str}</h1>
     <div class="meta">
-      <span>&#127936; {total_props} Directions Ranked</span>
+      <span>&#9650; {n_overs} Overs &nbsp;&#9660; {n_unders} Unders</span>
       <span>&#128994; {len(high_conf)} High Confidence (&gt;65%)</span>
       <span>&#127931; {n_sports} Sport{"s" if n_sports != 1 else ""} Active</span>
       <span>&#9201; {duration_secs:.0f}s runtime</span>
@@ -278,10 +295,20 @@ def render_plain_text(results_by_sport: dict[str, list[PropResult]], run_date: d
     for sport_name, sport_results in results_by_sport.items():
         if not sport_results:
             continue
-        lines.append(f"── {sport_name} ──")
-        for r in sport_results[:20]:
+        overs  = [r for r in sport_results if r.direction == "OVER"]
+        unders = [r for r in sport_results if r.direction == "UNDER"]
+        lines.append(f"── {sport_name} — TOP OVERS ──")
+        for r in overs:
             lines.append(
-                f"{r.rank:>3}. {r.player_name:<22} {r.direction:<5} "
+                f"{r.rank:>3}. {r.player_name:<22} "
+                f"{r.stat_type:<14} Line:{r.line:<6} "
+                f"Prob:{r.hit_probability:.0f}%  "
+                f"Pred:{r.predicted_value:.1f}"
+            )
+        lines.append(f"── {sport_name} — TOP UNDERS ──")
+        for r in unders:
+            lines.append(
+                f"{r.rank:>3}. {r.player_name:<22} "
                 f"{r.stat_type:<14} Line:{r.line:<6} "
                 f"Prob:{r.hit_probability:.0f}%  "
                 f"Pred:{r.predicted_value:.1f}"

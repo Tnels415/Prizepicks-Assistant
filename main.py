@@ -56,6 +56,17 @@ def setup_logging() -> None:
     root.addHandler(stream_handler)
 
 
+def _top_by_direction(results: list, n: int = 10) -> list:
+    """Return top-n OVER and top-n UNDER picks, re-ranked 1..n within each direction."""
+    overs  = [r for r in results if r.direction == "OVER"][:n]
+    unders = [r for r in results if r.direction == "UNDER"][:n]
+    for i, r in enumerate(overs,  1):
+        r.rank = i
+    for i, r in enumerate(unders, 1):
+        r.rank = i
+    return overs + unders
+
+
 def _build_stats_clients(cfg: dict) -> dict:
     return {
         "NBA": NBAStatsClient(balldontlie_api_key=cfg.get("balldontlie_api_key")),
@@ -162,14 +173,23 @@ def main() -> int:
         sport_results = analyzer.analyze_all_props(props)
 
         if sport_results:
+            sport_results = _top_by_direction(sport_results)
             results_by_sport[sport_name] = sport_results
+            top_over  = next((r for r in sport_results if r.direction == "OVER"),  None)
+            top_under = next((r for r in sport_results if r.direction == "UNDER"), None)
             logger.info(
-                "%s: %d directions ranked (top pick: %s %s %.0f%%)",
+                "%s: top OVER  — %s %s %.0f%%",
                 sport_name,
-                len(sport_results),
-                sport_results[0].player_name,
-                sport_results[0].direction,
-                sport_results[0].hit_probability,
+                top_over.player_name  if top_over  else "—",
+                top_over.stat_type    if top_over  else "",
+                top_over.hit_probability if top_over else 0,
+            )
+            logger.info(
+                "%s: top UNDER — %s %s %.0f%%",
+                sport_name,
+                top_under.player_name  if top_under  else "—",
+                top_under.stat_type    if top_under  else "",
+                top_under.hit_probability if top_under else 0,
             )
         else:
             logger.warning(
@@ -240,10 +260,19 @@ def main() -> int:
     print("=" * 60)
     for sport_name, sport_results in results_by_sport.items():
         emoji = SPORT_CONFIG[sport_name].get("emoji", "")
-        print(f"\n  {emoji}  {sport_name}")
-        for r in sport_results[:5]:
+        overs  = [r for r in sport_results if r.direction == "OVER"]
+        unders = [r for r in sport_results if r.direction == "UNDER"]
+        print(f"\n  {emoji}  {sport_name} — TOP OVERS")
+        for r in overs[:5]:
             print(
-                f"    {r.rank:>3}. {r.player_name:<22} {r.direction:<5} "
+                f"    {r.rank:>3}. {r.player_name:<22} "
+                f"{r.stat_type:<14} Line:{r.line:<6.1f} "
+                f"Prob:{r.hit_probability:.0f}%"
+            )
+        print(f"\n  {emoji}  {sport_name} — TOP UNDERS")
+        for r in unders[:5]:
+            print(
+                f"    {r.rank:>3}. {r.player_name:<22} "
                 f"{r.stat_type:<14} Line:{r.line:<6.1f} "
                 f"Prob:{r.hit_probability:.0f}%"
             )
