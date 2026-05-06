@@ -28,6 +28,13 @@ _NHL_PLAYER_DB: dict[str, int] = {}
 _NHL_DB_LOADED: bool = False
 
 
+def _name_str(v) -> str:
+    """Return a plain string from a name field that may be a str or a multilingual dict."""
+    if not v:
+        return ""
+    return v.get("default", "") if isinstance(v, dict) else str(v)
+
+
 def _build_nhl_player_db() -> None:
     """Populate _NHL_PLAYER_DB from every team's current roster."""
     global _NHL_PLAYER_DB, _NHL_DB_LOADED
@@ -46,11 +53,14 @@ def _build_nhl_player_db() -> None:
             data = resp.json()
             for group in ("forwards", "defensemen", "goalies"):
                 for player in data.get(group, []):
-                    pid = player.get("id")
-                    first = player.get("firstName", {}).get("default", "")
-                    last = player.get("lastName", {}).get("default", "")
-                    if pid and (first or last):
-                        db[f"{first} {last}".strip().lower()] = pid
+                    try:
+                        pid = player.get("id")
+                        first = _name_str(player.get("firstName"))
+                        last = _name_str(player.get("lastName"))
+                        if pid and (first or last):
+                            db[f"{first} {last}".strip().lower()] = pid
+                    except Exception as exc:
+                        logger.debug("NHL roster: skipping player entry %s: %s", player, exc)
             loaded += 1
             time.sleep(0.05)
         except Exception as exc:
