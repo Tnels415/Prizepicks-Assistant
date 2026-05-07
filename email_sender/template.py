@@ -133,36 +133,15 @@ def render_email_html(
         emoji = cfg.get("emoji", "")
         full_name = cfg.get("full_name", sport_name)
 
-        overs  = [r for r in sport_results if r.direction == "OVER"]
-        unders = [r for r in sport_results if r.direction == "UNDER"]
-
-        def _direction_table(picks, label, header_color):
-            if not picks:
-                return ""
-            rows = "\n".join(_render_row(r) for r in picks)
-            return f"""
-  <div style="padding:8px 20px 4px;background:{header_color};color:#fff;font-size:12px;font-weight:bold">
-    {label} &mdash; {len(picks)} Picks
-  </div>
-  <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
-    <thead>
-      <tr>
-        <th>#</th><th>Player</th><th>Team</th><th>Direction</th>
-        <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
-        <th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
-      </tr>
-    </thead>
-    <tbody>
-{rows}
-    </tbody>
-  </table>"""
+        overs  = [r for r in sport_results if r.direction == "OVER"][:10]
+        unders = [r for r in sport_results if r.direction == "UNDER"][:10]
 
         sport_sections_html += f"""
   <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
     {emoji} {full_name}
   </div>"""
-        sport_sections_html += _direction_table(overs,  "&#9650; Top 10 Overs",  "#28a745")
-        sport_sections_html += _direction_table(unders, "&#9660; Top 10 Unders", "#e67e22")
+        sport_sections_html += _render_direction_table(overs,  "&#9650; Top 10 Overs",  "#28a745")
+        sport_sections_html += _render_direction_table(unders, "&#9660; Top 10 Unders", "#e67e22")
         sport_sections_html += '<div style="margin-bottom:12px"></div>'
 
     total_props = len(all_results)
@@ -251,6 +230,28 @@ def _conf_class(prob: float) -> str:
     if prob >= 55:
         return "med"
     return "low"
+
+
+def _render_direction_table(picks: list, label: str, header_color: str) -> str:
+    if not picks:
+        return ""
+    rows = "\n".join(_render_row(r) for r in picks)
+    return f"""
+  <div style="padding:8px 20px 4px;background:{header_color};color:#fff;font-size:12px;font-weight:bold">
+    {label} &mdash; {len(picks)} Picks
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
+    <thead>
+      <tr>
+        <th>#</th><th>Player</th><th>Team</th><th>Direction</th>
+        <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
+        <th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows}
+    </tbody>
+  </table>"""
 
 
 def _render_row(r: PropResult) -> str:
