@@ -263,14 +263,14 @@ def main() -> int:
         overs  = [r for r in sport_results if r.direction == "OVER"]
         unders = [r for r in sport_results if r.direction == "UNDER"]
         print(f"\n  {emoji}  {sport_name} — TOP OVERS")
-        for r in overs[:5]:
+        for r in overs[:10]:
             print(
                 f"    {r.rank:>3}. {r.player_name:<22} "
                 f"{r.stat_type:<14} Line:{r.line:<6.1f} "
                 f"Prob:{r.hit_probability:.0f}%"
             )
         print(f"\n  {emoji}  {sport_name} — TOP UNDERS")
-        for r in unders[:5]:
+        for r in unders[:10]:
             print(
                 f"    {r.rank:>3}. {r.player_name:<22} "
                 f"{r.stat_type:<14} Line:{r.line:<6.1f} "
