@@ -134,6 +134,19 @@ class PropAnalyzer:
         if not team_abbr and not game_log.empty and "MATCHUP" in game_log.columns:
             matchup = str(game_log["MATCHUP"].iloc[0])
             team_abbr = matchup.split()[0].upper()
+            # If the event is known, verify the derived team is actually in it.
+            # A mid-season trade means the game log's most recent entry may name
+            # an old team (e.g. "DAL" for a player now on "DET").  Resetting here
+            # lets the event-team lookup below find the correct current team.
+            if event_home or event_away:
+                event_teams = {t.upper() for t in (event_home, event_away) if t}
+                if team_abbr not in event_teams:
+                    logger.debug(
+                        "%s: game-log team '%s' not in today's event (%s @ %s)"
+                        " — player may have been traded; trying event teams",
+                        player_name, team_abbr, event_away, event_home,
+                    )
+                    team_abbr = ""
 
         if not team_abbr and (event_home or event_away):
             for candidate in (event_home, event_away):
