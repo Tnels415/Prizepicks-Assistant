@@ -17,12 +17,16 @@ MLB_API = "https://statsapi.mlb.com/api/v1"
 # Built once per process from the season-wide active roster endpoint;
 # avoids the deprecated people/search endpoint (now returns 404).
 _MLB_PLAYER_DB: dict[str, int] = {}
+# team_id → abbreviation: MLB game log splits include abbreviation on the
+# *opponent* object but NOT on the player's own *team* object, so we need
+# a separate lookup to build correct MATCHUP strings.
+_MLB_TEAM_DB: dict[int, str] = {}
 _MLB_DB_LOADED: bool = False
 
 
 def _build_mlb_player_db() -> None:
-    """Fetch all active MLB players for the current season in one API call."""
-    global _MLB_PLAYER_DB, _MLB_DB_LOADED
+    """Fetch all active MLB players and team abbreviations in one pass."""
+    global _MLB_PLAYER_DB, _MLB_TEAM_DB, _MLB_DB_LOADED
     _MLB_DB_LOADED = True
     year = date.today().year
     try:
@@ -43,6 +47,23 @@ def _build_mlb_player_db() -> None:
         logger.info("MLB player DB built: %d active players for %d season", len(db), year)
     except Exception as exc:
         logger.warning("MLB player DB build failed: %s", exc)
+
+    try:
+        tresp = requests.get(
+            f"{MLB_API}/teams",
+            params={"sportId": 1},
+            timeout=15,
+        )
+        tresp.raise_for_status()
+        teams = tresp.json().get("teams", [])
+        _MLB_TEAM_DB = {
+            t["id"]: t["abbreviation"]
+            for t in teams
+            if t.get("id") and t.get("abbreviation")
+        }
+        logger.info("MLB team DB built: %d teams", len(_MLB_TEAM_DB))
+    except Exception as exc:
+        logger.warning("MLB team DB build failed: %s", exc)
 
 
 class MLBStatsClient(BaseStatsClient):
@@ -168,7 +189,10 @@ class MLBStatsClient(BaseStatsClient):
         rows = []
         for s in splits:
             stat = s.get("stat", {})
-            team_abbr = s.get("team", {}).get("abbreviation", "")
+            team_obj = s.get("team", {})
+            team_abbr = team_obj.get("abbreviation", "")
+            if not team_abbr:
+                team_abbr = _MLB_TEAM_DB.get(team_obj.get("id"), "")
             opp_abbr = s.get("opponent", {}).get("abbreviation", "")
             is_home = s.get("isHome", True)
             vs_str = "vs." if is_home else "@"
