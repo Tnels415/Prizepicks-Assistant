@@ -62,7 +62,7 @@ NBA_SEASON_YEAR = get_current_season_year()
 NBA_SEASON_TYPE = "Regular Season"
 
 PRIZEPICKS_URL = "https://api.prizepicks.com/projections"
-PRIZEPICKS_LEAGUE_ID = 7
+PRIZEPICKS_LEAGUE_ID = 7   # NBA (legacy constant kept for compatibility)
 PRIZEPICKS_PER_PAGE = 250
 
 BALLDONTLIE_BASE_URL = "https://api.balldontlie.io/v1"
@@ -230,6 +230,14 @@ SPORT_CONFIG: dict[str, dict] = {
         "team_name_to_abbr": NBA_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NBAStatsClient",
         "emoji": "🏀",
+        "prizepicks_league_id": 7,
+        "prizepicks_stat_map": {
+            "Blocked Shots": "Blocks",
+            "Pts+Rebs+Asts": "Pts+Reb+Ast",
+            "Pts+Asts": "Pts+Ast",
+            "Pts+Rebs": "Pts+Reb",
+            "Rebs+Asts": "Reb+Ast",
+        },
     },
     "NHL": {
         "name": "NHL",
@@ -264,6 +272,10 @@ SPORT_CONFIG: dict[str, dict] = {
         "team_name_to_abbr": NHL_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NHLStatsClient",
         "emoji": "🏒",
+        "prizepicks_league_id": 12,
+        "prizepicks_stat_map": {
+            "Shots On Goal": "Shots on Goal",
+        },
     },
     "NFL": {
         "name": "NFL",
@@ -299,6 +311,12 @@ SPORT_CONFIG: dict[str, dict] = {
         "team_name_to_abbr": NFL_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NFLStatsClient",
         "emoji": "🏈",
+        "prizepicks_league_id": 9,
+        "prizepicks_stat_map": {
+            "Pass Yards": "Passing Yards",
+            "Pass TDs": "Passing TDs",
+            "Rush Yards": "Rushing Yards",
+        },
     },
     "MLB": {
         "name": "MLB",
@@ -339,5 +357,10 @@ SPORT_CONFIG: dict[str, dict] = {
         "team_name_to_abbr": MLB_TEAM_NAME_TO_ABBR,
         "stats_client_class": "MLBStatsClient",
         "emoji": "⚾",
+        "prizepicks_league_id": 2,
+        "prizepicks_stat_map": {
+            "Pitcher Strikeouts": "Strikeouts",
+            "Hitter Fantasy Score": None,   # unsupported composite — skip
+        },
     },
 }

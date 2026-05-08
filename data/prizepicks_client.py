@@ -7,7 +7,7 @@ from pathlib import Path
 
 import requests
 
-from config import SPORT_CONFIG
+from config import SPORT_CONFIG, PRIZEPICKS_URL, PRIZEPICKS_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,104 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 # Priority bookmaker order
 PREFERRED_BOOKS = ["draftkings", "fanduel", "betmgm", "williamhill_us", "pointsbet_us", "bovada"]
+
+
+class PrizePicksLiveClient:
+    """
+    Fetches live player prop lines directly from the PrizePicks projections API.
+    No API key required — used as a free fallback when The Odds API is exhausted.
+    """
+
+    def fetch_props(self, sport_config: dict) -> list[dict]:
+        league_id = sport_config.get("prizepicks_league_id")
+        if not league_id:
+            return []
+
+        sport_name = sport_config["name"]
+        try:
+            resp = requests.get(
+                PRIZEPICKS_URL,
+                params={"league_id": league_id, "per_page": 250},
+                headers=PRIZEPICKS_HEADERS,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("PrizePicks API failed for %s: %s", sport_name, exc)
+            return []
+
+        props = self._parse(data, sport_config)
+        logger.info("PrizePicks API: %d %s props fetched", len(props), sport_name)
+        return props
+
+    def _parse(self, data: dict, sport_config: dict) -> list[dict]:
+        sport_name = sport_config["name"]
+        prop_stat_map = sport_config["prop_stat_map"]
+        pp_stat_map = sport_config.get("prizepicks_stat_map", {})
+        team_name_to_abbr = sport_config.get("team_name_to_abbr", {})
+
+        # Build player lookup: id → {name, team, position}
+        players: dict[str, dict] = {}
+        for obj in data.get("included", []):
+            if obj.get("type") == "new_player":
+                attrs = obj.get("attributes", {})
+                raw_team = attrs.get("team", "")
+                team_abbr = team_name_to_abbr.get(raw_team, raw_team)
+                players[obj["id"]] = {
+                    "name": attrs.get("name", ""),
+                    "team": team_abbr,
+                    "position": attrs.get("position", ""),
+                }
+
+        seen: dict[tuple, dict] = {}
+        for proj in data.get("data", []):
+            if proj.get("type") != "projection":
+                continue
+            attrs = proj.get("attributes", {})
+
+            # Only include lines not yet started
+            if attrs.get("status") not in ("pre_game", "pregame", None, ""):
+                continue
+
+            raw_stat = attrs.get("stat_type", "")
+            # Normalize PrizePicks naming to our internal stat names
+            stat_type = pp_stat_map.get(raw_stat, raw_stat)
+            # None value in map means explicitly unsupported — skip
+            if stat_type is None or stat_type not in prop_stat_map:
+                continue
+
+            line = attrs.get("line_score")
+            if line is None:
+                continue
+
+            player_id = (
+                proj.get("relationships", {})
+                    .get("new_player", {})
+                    .get("data", {})
+                    .get("id", "")
+            )
+            player = players.get(player_id, {})
+            player_name = player.get("name", "")
+            if not player_name:
+                continue
+
+            key = (player_name, stat_type)
+            if key not in seen:
+                seen[key] = {
+                    "sport": sport_name,
+                    "projection_id": proj.get("id", str(len(seen))),
+                    "player_name": player_name,
+                    "team_abbr": player.get("team", ""),
+                    "event_home_abbr": "",
+                    "event_away_abbr": "",
+                    "position": player.get("position", ""),
+                    "stat_type": stat_type,
+                    "line": float(line),
+                    "start_time": attrs.get("start_time", ""),
+                }
+
+        return list(seen.values())
 
 PROPS_FILE_INSTRUCTIONS = """
 =======================================================
@@ -69,11 +167,25 @@ class OddsAPIClient:
     # ------------------------------------------------------------------
 
     def fetch_props(self, sport_config: dict) -> list[dict]:
-        """Return list of prop dicts for the given sport."""
+        """Return list of prop dicts for the given sport.
+
+        Source priority:
+          1. The Odds API (if API key present)
+          2. PrizePicks live API (free, no key required)
+          3. Manual props.json fallback
+        """
         if self._odds_api_key:
             props = self._fetch_from_odds_api(sport_config)
             if props:
                 return props
+            logger.info(
+                "The Odds API returned no props for %s — trying PrizePicks",
+                sport_config["name"],
+            )
+
+        props = PrizePicksLiveClient().fetch_props(sport_config)
+        if props:
+            return props
 
         return self._load_from_file(sport_config)
 
