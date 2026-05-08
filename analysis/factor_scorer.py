@@ -145,6 +145,42 @@ class FactorScorer:
         diff = combined - league_avg_pace
         return float(max(-3.0, min(3.0, diff)))
 
+    def score_consistency(self, std_dev: float, mean: float, line: float) -> float:
+        """±6pp. Wide std relative to the gap between mean and line penalises confidence;
+        a tight distribution comfortably on one side boosts it."""
+        if line <= 0 or std_dev <= 0:
+            return 0.0
+        gap = abs(mean - line)
+        ratio = gap / std_dev        # how many std-devs the mean sits away from the line
+        # ratio >= 1.5 → comfortably clear → +4 to +6pp
+        # ratio <  0.5 → line cuts through the distribution → -4 to -6pp
+        signal = (ratio - 1.0) * 6.0   # 0 at ratio=1, ±6 at ratio=0/2
+        return float(max(-6.0, min(6.0, signal)))
+
+    def score_hit_rate_trend(self, hr_5: float, hr_10: float, hr_20: float) -> float:
+        """±5pp. Rewards (penalises) a rising (falling) prop-specific hit rate
+        over the player's last 5, 10, and 20 games."""
+        trend = hr_5 - hr_20                 # overall momentum vs the line
+        accel = (hr_5 - hr_10) * 0.6         # recent acceleration
+        signal = (trend + accel) * 100.0     # scale to percentage-point space
+        return float(max(-5.0, min(5.0, signal)))
+
+    def score_trend_direction(
+        self,
+        last_5_avg: float,
+        last_10_avg: float,
+        season_avg: float,
+        line: float,
+    ) -> float:
+        """±4pp. Scores the slope of the performance trajectory (season → L10 → L5)
+        relative to the prop line so the model rewards/penalises momentum."""
+        if line <= 0:
+            return 0.0
+        slope_recent  = last_5_avg  - last_10_avg
+        slope_overall = last_10_avg - season_avg
+        signal = (0.6 * slope_recent + 0.4 * slope_overall) / line * 20.0
+        return float(max(-4.0, min(4.0, signal)))
+
     # -------------------------------------------------------------------------
     # Composite probability
     # -------------------------------------------------------------------------

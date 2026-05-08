@@ -21,6 +21,10 @@ FACTOR_NAMES = [
     "home_away",
     "rest_days",
     "pace",
+    # Per-player historical signal factors (added for richer individual analysis)
+    "consistency",
+    "hit_rate_trend",
+    "trend_direction",
 ]
 
 _DDL = """
@@ -239,6 +243,36 @@ class HistoryStore:
                     d["raw_adjustments"] = {}
             result.append(d)
         return result
+
+    def get_player_accuracy(
+        self, sport: str = "NBA", min_samples: int = 10
+    ) -> dict[tuple, float]:
+        """Return {(player_name, stat_type): bias_pp} for every player-stat pair
+        with at least min_samples evaluated predictions.  bias_pp > 0 means the
+        model has been systematically under-predicting; < 0 means over-predicting."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT player_name, stat_type,
+                       AVG(
+                           CASE WHEN direction='OVER'
+                                THEN hit_probability / 100.0
+                                ELSE 1.0 - hit_probability / 100.0
+                           END
+                       ) AS mean_pred,
+                       AVG(CAST(correct AS REAL)) AS actual_rate,
+                       COUNT(*) AS n
+                FROM predictions
+                WHERE correct IN (0, 1) AND sport = ?
+                GROUP BY player_name, stat_type
+                HAVING n >= ?
+                """,
+                (sport, min_samples),
+            ).fetchall()
+        return {
+            (r["player_name"], r["stat_type"]): (r["actual_rate"] - r["mean_pred"]) * 100.0
+            for r in rows
+        }
 
     def count_distinct_dates(self, sport: str = "NBA") -> int:
         with self._conn() as conn:

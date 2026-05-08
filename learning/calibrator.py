@@ -21,6 +21,7 @@ class Corrections:
     calibration_map: dict[int, float] = field(default_factory=dict)
     stat_type_bias: dict[str, float] = field(default_factory=dict)
     factor_weights: dict[str, float] = field(default_factory=dict)
+    player_bias: dict[tuple, float] = field(default_factory=dict)
     has_sufficient_data: bool = False
 
 
@@ -33,12 +34,15 @@ class Calibrator:
 
     def compute_corrections(self, run_date: date) -> Corrections:
         rows = self._store.get_evaluated_predictions(self._min_days, sport=self._sport)
+        # Player-level bias is always computed (doesn't need the 7-day gate)
+        player_bias = self._store.get_player_accuracy(sport=self._sport, min_samples=10)
+
         if not rows:
             logger.info(
                 "Calibrator: fewer than %d days of evaluated data — using raw model",
                 self._min_days,
             )
-            return Corrections(has_sufficient_data=False)
+            return Corrections(has_sufficient_data=False, player_bias=player_bias)
 
         logger.info("Calibrator: computing corrections from %d evaluated predictions", len(rows))
 
@@ -60,6 +64,7 @@ class Calibrator:
             calibration_map=calibration_map,
             stat_type_bias=stat_type_bias,
             factor_weights=new_weights,
+            player_bias=player_bias,
             has_sufficient_data=True,
         )
 

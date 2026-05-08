@@ -127,3 +127,27 @@ class HistoricalStatsCalculator:
             return None
         series = self.get_stat_series(loc_df, stat_type).dropna()
         return float(series.mean()) if not series.empty else None
+
+    def calculate_consistency(self, df: pd.DataFrame, stat_type: str, line: float) -> dict:
+        """Return volatility metrics: std_dev, coefficient of variation, and
+        the fraction of games that fell within one std-dev of the line."""
+        series = self.get_stat_series(df, stat_type).dropna()
+        if len(series) < 5:
+            return {"std_dev": 0.0, "cv": 0.0, "pct_within_1std_of_line": 0.5}
+        std = float(series.std())
+        mean = float(series.mean())
+        cv = std / mean if mean > 0 else 0.0
+        within_1std = float(((series - line).abs() <= std).mean())
+        return {"std_dev": std, "cv": cv, "pct_within_1std_of_line": within_1std}
+
+    def calculate_hit_rates_multi_window(
+        self, df: pd.DataFrame, stat_type: str, line: float
+    ) -> dict:
+        """Return prop-specific hit rates at 3 recency windows against the exact line."""
+        series = self.get_stat_series(df, stat_type).dropna()
+
+        def _hr(n: int) -> float:
+            s = series.iloc[:n]
+            return float((s > line).mean()) if len(s) >= 3 else 0.5
+
+        return {"hr_5": _hr(5), "hr_10": _hr(10), "hr_20": _hr(20)}

@@ -44,6 +44,10 @@ class PropResult:
     data_quality: str = "full"      # "full", "partial", "minimal"
     raw_adjustments: dict = field(default_factory=dict)
     rank: int = 0
+    # Per-player historical signal fields
+    std_dev: float = 0.0
+    hit_rate_5: float = 0.5
+    hit_rate_10: float = 0.5
 
 
 class PropAnalyzer:
@@ -205,8 +209,23 @@ class PropAnalyzer:
             stat_type,
         )
 
+        # Per-player historical signal factors
+        consistency = self._calc.calculate_consistency(game_log, stat_type, line)
+        hit_rates   = self._calc.calculate_hit_rates_multi_window(game_log, stat_type, line)
+
+        delta_consistency = self._scorer.score_consistency(
+            consistency["std_dev"], avgs["season_avg"], line
+        )
+        delta_hit_trend = self._scorer.score_hit_rate_trend(
+            hit_rates["hr_5"], hit_rates["hr_10"], hit_rates["hr_20"]
+        )
+        delta_trend_dir = self._scorer.score_trend_direction(
+            avgs["last_5_avg"], avgs["last_10_avg"], avgs["season_avg"], line
+        )
+
         adjustments = [delta_season, delta_form, delta_h2h, delta_opp,
-                       delta_loc, delta_rest, delta_pace]
+                       delta_loc, delta_rest, delta_pace,
+                       delta_consistency, delta_hit_trend, delta_trend_dir]
 
         learned_weights = (
             self._corrections.factor_weights
@@ -223,6 +242,16 @@ class PropAnalyzer:
             bias_delta = self._corrections.stat_type_bias.get(stat_type, 0.0)
             over_prob = max(5.0, min(95.0, over_prob + cal_delta + bias_delta))
 
+        # Player-level correction — applied independently of the 7-day gate so
+        # individual accuracy data helps immediately once ≥10 samples exist.
+        if self._corrections:
+            player_delta = self._corrections.player_bias.get((player_name, stat_type), 0.0)
+            if player_delta:
+                over_prob = max(5.0, min(95.0, over_prob + player_delta))
+                logger.debug(
+                    "%s %s: player-level bias %.1fpp applied", player_name, stat_type, player_delta
+                )
+
         under_prob = 100.0 - over_prob
 
         predicted = self._compute_predicted_value(
@@ -237,6 +266,9 @@ class PropAnalyzer:
             "home_away": delta_loc,
             "rest_days": delta_rest,
             "pace": delta_pace,
+            "consistency": delta_consistency,
+            "hit_rate_trend": delta_hit_trend,
+            "trend_direction": delta_trend_dir,
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)
@@ -266,6 +298,9 @@ class PropAnalyzer:
             key_factors=key_factors,
             data_quality=data_quality,
             raw_adjustments=raw_adj,
+            std_dev=consistency["std_dev"],
+            hit_rate_5=hit_rates["hr_5"],
+            hit_rate_10=hit_rates["hr_10"],
         )
 
         return [
