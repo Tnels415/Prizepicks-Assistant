@@ -138,6 +138,7 @@ def main() -> int:
     # --- Per-sport analysis ------------------------------------------------
     results_by_sport: dict[str, list[PropResult]] = {}
     any_games = False
+    props_failed_sports: list[str] = []   # sports where prop loading returned nothing
 
     for sport_name in active_sports:
         sport_cfg = SPORT_CONFIG[sport_name]
@@ -157,7 +158,14 @@ def main() -> int:
         # Fetch props
         props = odds_client.fetch_props(sport_cfg)
         if not props:
-            logger.warning("No %s props loaded — check API key or props.json", sport_name)
+            logger.warning(
+                "No %s props loaded — Odds API key missing/exhausted and "
+                "PrizePicks API unavailable. "
+                "Add THE_ODDS_API_KEY to .env (free at the-odds-api.com) "
+                "or manually fill props.json with today's lines.",
+                sport_name,
+            )
+            props_failed_sports.append(sport_name)
             continue
 
         logger.info("Fetched %d %s props", len(props), sport_name)
@@ -225,12 +233,42 @@ def main() -> int:
         return 0
 
     if not results_by_sport:
-        logger.error("Analysis produced no results for any sport.")
-        msg = "Analysis produced no results today. Check the application logs."
+        if props_failed_sports and not any(
+            s for s in active_sports
+            if s not in props_failed_sports
+            and schedule.get_todays_games(sport_key=SPORT_CONFIG[s]["odds_sport_key"])
+        ):
+            # Every sport with games today had props loading fail — it's a data source issue
+            logger.error(
+                "No prop lines could be loaded for any sport (%s). "
+                "Fix options: "
+                "(1) Add THE_ODDS_API_KEY to .env — get a free key (500 req/month) at "
+                "the-odds-api.com and the key resets monthly; "
+                "(2) Manually fill props.json with today's lines and re-run.",
+                ", ".join(props_failed_sports),
+            )
+            msg = (
+                "No prop lines were available today — the Odds API key is missing or "
+                "exhausted, and the PrizePicks API is currently unavailable.<br><br>"
+                "<b>To fix:</b><br>"
+                "1. Get a free Odds API key (500 req/month) at "
+                "<a href='https://the-odds-api.com'>the-odds-api.com</a> "
+                "and add <code>THE_ODDS_API_KEY=your_key</code> to <code>.env</code>.<br>"
+                "2. Or manually fill <code>props.json</code> with today's lines and re-run."
+            )
+        else:
+            logger.error(
+                "Analysis produced no results for any sport. "
+                "Check the logs above for per-player skip reasons "
+                "(player not found, no game log, or game context mismatch)."
+            )
+            msg = "Analysis produced no results today. Check the application logs."
         send(
-            f"Prop Picks - {today.strftime('%B %d, %Y')} - Analysis Error",
+            f"Prop Picks - {today.strftime('%B %d, %Y')} - No Data Available",
             f"<p>{msg}</p>",
-            msg,
+            msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
+                .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", "")
+                .replace("<a href='https://the-odds-api.com'>the-odds-api.com</a>", "the-odds-api.com"),
         )
         return 1
 

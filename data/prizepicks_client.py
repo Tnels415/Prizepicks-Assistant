@@ -7,7 +7,7 @@ from pathlib import Path
 
 import requests
 
-from config import SPORT_CONFIG, PRIZEPICKS_URL, PRIZEPICKS_HEADERS
+from config import SPORT_CONFIG, PRIZEPICKS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,52 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 PREFERRED_BOOKS = ["draftkings", "fanduel", "betmgm", "williamhill_us", "pointsbet_us", "bovada"]
 
 
+_PP_HEADER_VARIANTS = [
+    # Variant 1: Desktop Chrome (original)
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    },
+    # Variant 2: Safari macOS
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.4.1 Safari/605.1.15"
+        ),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+    },
+    # Variant 3: Mobile Chrome (Android)
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.6367.82 Mobile Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+        "X-Device-Id": "prizepicks-client",
+    },
+]
+
+
 class PrizePicksLiveClient:
     """
     Fetches live player prop lines directly from the PrizePicks projections API.
     No API key required — used as a free fallback when The Odds API is exhausted.
+    Tries multiple header strategies in case Cloudflare bot detection blocks one.
     """
 
     def fetch_props(self, sport_config: dict) -> list[dict]:
@@ -32,22 +74,43 @@ class PrizePicksLiveClient:
             return []
 
         sport_name = sport_config["name"]
-        try:
-            resp = requests.get(
-                PRIZEPICKS_URL,
-                params={"league_id": league_id, "per_page": 250},
-                headers=PRIZEPICKS_HEADERS,
-                timeout=20,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            logger.warning("PrizePicks API failed for %s: %s", sport_name, exc)
-            return []
+        params = {"league_id": league_id, "per_page": 250, "single_stat": "true"}
 
-        props = self._parse(data, sport_config)
-        logger.info("PrizePicks API: %d %s props fetched", len(props), sport_name)
-        return props
+        for i, headers in enumerate(_PP_HEADER_VARIANTS):
+            try:
+                resp = requests.get(
+                    PRIZEPICKS_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code == 403:
+                    logger.debug(
+                        "PrizePicks API 403 with header variant %d for %s — trying next",
+                        i + 1, sport_name,
+                    )
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                props = self._parse(data, sport_config)
+                logger.info(
+                    "PrizePicks API: %d %s props fetched (header variant %d)",
+                    len(props), sport_name, i + 1,
+                )
+                return props
+            except requests.exceptions.HTTPError:
+                continue
+            except Exception as exc:
+                logger.warning("PrizePicks API error for %s (variant %d): %s", sport_name, i + 1, exc)
+                break
+
+        logger.warning(
+            "PrizePicks API unavailable for %s (all %d header variants returned 403 or error). "
+            "PrizePicks may have added bot protection. "
+            "Use THE_ODDS_API_KEY in .env or fill props.json manually.",
+            sport_name, len(_PP_HEADER_VARIANTS),
+        )
+        return []
 
     def _parse(self, data: dict, sport_config: dict) -> list[dict]:
         sport_name = sport_config["name"]
@@ -119,30 +182,37 @@ class PrizePicksLiveClient:
 
 PROPS_FILE_INSTRUCTIONS = """
 =======================================================
-  ACTION REQUIRED: Fill in today's player prop lines
+  ACTION REQUIRED: No prop lines available today
 =======================================================
-Neither The Odds API nor the live API returned props.
+Neither The Odds API nor PrizePicks returned props.
+A props.json file has been created for you to fill in.
 
-Either:
-  A) Add your Odds API key to .env:
-       THE_ODDS_API_KEY=your_key_here
-     Get a free key (500 req/month) at: the-odds-api.com
+OPTION A — Get a free Odds API key (recommended):
+  1. Sign up at: https://the-odds-api.com
+  2. Free tier: 500 requests/month (resets monthly)
+  3. Add to .env:  THE_ODDS_API_KEY=your_key_here
+  4. Re-run: python3 main.py
 
-  B) Manually fill in props.json with today's lines,
-     then run python3 main.py again.
+OPTION B — Fill props.json manually:
+  Edit props.json with today's lines, then re-run.
 
-props.json format:
+props.json format (remove these examples first):
   [
-    {
-      "sport": "NBA",
-      "player_name": "Jayson Tatum",
-      "team_abbr": "BOS",
-      "stat_type": "Points",
-      "line": 27.5
-    }
+    {"sport": "NBA", "player_name": "Player Name",
+     "team_abbr": "BOS", "stat_type": "Points", "line": 27.5},
+    {"sport": "NHL", "player_name": "Player Name",
+     "team_abbr": "EDM", "stat_type": "Goals", "line": 0.5},
+    {"sport": "MLB", "player_name": "Player Name",
+     "team_abbr": "LAD", "stat_type": "Hits", "line": 1.5}
   ]
 
-Supported sport values: NBA, NHL, MLB, NFL
+NBA stat types:  Points, Rebounds, Assists, 3-PT Made, Steals,
+                 Blocks, Turnovers, Pts+Reb+Ast, Pts+Ast, Pts+Reb
+NHL stat types:  Points, Goals, Assists, Shots on Goal, Power Play Points
+MLB stat types:  Hits, Home Runs, RBIs, Total Bases, Runs Scored,
+                 Stolen Bases, Strikeouts
+NFL stat types:  Passing Yards, Rushing Yards, Receiving Yards,
+                 Receptions, Passing TDs
 =======================================================
 """
 
