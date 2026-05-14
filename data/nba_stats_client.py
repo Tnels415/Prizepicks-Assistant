@@ -16,8 +16,25 @@ from config import (
     NBA_API_RETRY_ATTEMPTS, NBA_API_RETRY_MIN_WAIT, NBA_API_RETRY_MAX_WAIT,
     BALLDONTLIE_BASE_URL,
 )
+from data.game_log_cache import GameLogCache
 
 logger = logging.getLogger(__name__)
+
+# Patch nba_api headers to improve stats.nba.com compatibility
+try:
+    from nba_api.stats.library import http as _nba_http
+    _nba_http.STATS_HEADERS.update({
+        "Origin": "https://www.nba.com",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "x-nba-stats-origin": "stats",
+        "x-nba-stats-token": "true",
+    })
+except Exception:
+    pass
+
+# Module-level cache singleton shared across all NBAStatsClient instances.
+_GAME_LOG_CACHE = GameLogCache()
 
 _PLAYER_CACHE: dict[int, pd.DataFrame] = {}
 _TEAM_STATS_CACHE: pd.DataFrame | None = None
@@ -88,13 +105,30 @@ class NBAStatsClient:
         if player_id in _PLAYER_CACHE:
             return _PLAYER_CACHE[player_id]
 
+        # 1. Check disk cache first (valid for 24 hours).
+        cached = _GAME_LOG_CACHE.get("NBA", player_id)
+        if cached is not None:
+            logger.debug("NBA game log for player %d served from disk cache", player_id)
+            _PLAYER_CACHE[player_id] = cached
+            return cached
+
+        # 2. Try live nba_api.
         df = self._fetch_game_log_nba_api(player_id)
         if df is None or df.empty:
             # Look up the original search name so BallDontLie can find its own ID.
             player_name = self._id_to_name.get(player_id, "")
             df = self._fetch_game_log_bdl(player_id, player_name)
-        if df is None:
-            df = pd.DataFrame()
+
+        # 3. On success, persist to disk cache.
+        if df is not None and not df.empty:
+            _GAME_LOG_CACHE.set("NBA", player_id, df)
+        else:
+            # 4. Both live sources failed — try stale cache (< 7 days old).
+            stale = _GAME_LOG_CACHE.get_stale("NBA", player_id)
+            if stale is not None:
+                df = stale
+            else:
+                df = pd.DataFrame()
 
         _PLAYER_CACHE[player_id] = df
         return df

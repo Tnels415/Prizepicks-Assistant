@@ -203,7 +203,9 @@ def main() -> int:
             logger.warning(
                 "%s: 0 directions ranked from %d props loaded — "
                 "all players were skipped (no game log data, player ID not found, "
-                "or game context mismatch). Check logs above for per-player details.",
+                "or game context mismatch). Check logs above for per-player details. "
+                "If stats.nba.com / NHL / MLB APIs are blocked, warm the disk cache by "
+                "running when the API is accessible; cached data lives in cache/game_logs/.",
                 sport_name, len(props),
             )
 
@@ -260,7 +262,11 @@ def main() -> int:
             logger.error(
                 "Analysis produced no results for any sport. "
                 "Check the logs above for per-player skip reasons "
-                "(player not found, no game log, or game context mismatch)."
+                "(player not found, no game log, or game context mismatch). "
+                "If the stats API (stats.nba.com / nhle.com / statsapi.mlb.com) is "
+                "blocked or rate-limited, game logs will be empty. "
+                "Disk-cached data (cache/game_logs/) will be used automatically on "
+                "subsequent runs once the cache has been warmed."
             )
             msg = "Analysis produced no results today. Check the application logs."
         send(

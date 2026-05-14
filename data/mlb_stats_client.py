@@ -8,8 +8,12 @@ import pandas as pd
 import requests
 
 from data.base_stats_client import BaseStatsClient
+from data.game_log_cache import GameLogCache
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache singleton shared across all MLBStatsClient instances.
+_GAME_LOG_CACHE = GameLogCache()
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
@@ -127,6 +131,14 @@ class MLBStatsClient(BaseStatsClient):
         if player_id in self._game_log_cache:
             return self._game_log_cache[player_id]
 
+        # 1. Check disk cache first (valid for 24 hours).
+        cached = _GAME_LOG_CACHE.get("MLB", player_id)
+        if cached is not None:
+            logger.debug("MLB game log for player %d served from disk cache", player_id)
+            self._game_log_cache[player_id] = cached
+            return cached
+
+        # 2. Try live MLB Stats API.
         year = date.today().year
         # Fetch regular season + postseason so the log is complete during October playoffs.
         hitting_dfs = [self._fetch_group(player_id, year, "hitting", gt) for gt in ("R", "P")]
@@ -155,6 +167,15 @@ class MLBStatsClient(BaseStatsClient):
 
         if not df.empty:
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+
+        # 3. On success, persist to disk cache.
+        if not df.empty:
+            _GAME_LOG_CACHE.set("MLB", player_id, df)
+        else:
+            # 4. Live fetch returned nothing — try stale cache (< 7 days old).
+            stale = _GAME_LOG_CACHE.get_stale("MLB", player_id)
+            if stale is not None:
+                df = stale
 
         self._game_log_cache[player_id] = df
         return df

@@ -5,3 +5,4 @@ logs/
 output/
 history.db
 props.json
+cache/

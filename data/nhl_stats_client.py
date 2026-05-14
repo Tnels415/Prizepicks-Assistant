@@ -9,8 +9,12 @@ import requests
 
 from config import get_nhl_season
 from data.base_stats_client import BaseStatsClient
+from data.game_log_cache import GameLogCache
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache singleton shared across all NHLStatsClient instances.
+_GAME_LOG_CACHE = GameLogCache()
 
 NHL_WEB_API = "https://api-web.nhle.com/v1"
 
@@ -134,6 +138,14 @@ class NHLStatsClient(BaseStatsClient):
         if player_id in self._game_log_cache:
             return self._game_log_cache[player_id]
 
+        # 1. Check disk cache first (valid for 24 hours).
+        cached = _GAME_LOG_CACHE.get("NHL", player_id)
+        if cached is not None:
+            logger.debug("NHL game log for player %d served from disk cache", player_id)
+            self._game_log_cache[player_id] = cached
+            return cached
+
+        # 2. Try live NHL API.
         season = get_nhl_season()
         rows: list[dict] = []
 
@@ -147,6 +159,15 @@ class NHLStatsClient(BaseStatsClient):
             df = pd.DataFrame(rows)
             df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+
+        # 3. On success, persist to disk cache.
+        if not df.empty:
+            _GAME_LOG_CACHE.set("NHL", player_id, df)
+        else:
+            # 4. Live fetch returned nothing — try stale cache (< 7 days old).
+            stale = _GAME_LOG_CACHE.get_stale("NHL", player_id)
+            if stale is not None:
+                df = stale
 
         self._game_log_cache[player_id] = df
         return df
