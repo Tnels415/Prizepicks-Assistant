@@ -160,20 +160,26 @@ class PrizePicksLiveClient:
                 continue
 
             key = (player_name, stat_type)
+            prop_dict = {
+                "sport": sport_name,
+                "projection_id": proj.get("id", str(len(seen))),
+                "player_name": player_name,
+                "team_abbr": player.get("team", ""),
+                "event_home_abbr": "",
+                "event_away_abbr": "",
+                "position": player.get("position", ""),
+                "stat_type": stat_type,
+                "line": float(line),
+                "start_time": attrs.get("start_time", ""),
+                "pick_type": pick_type,
+            }
+            # Always prefer the standard line. If we already have a goblin/demon
+            # entry and now find the standard one, replace it. This prevents the
+            # API response order from determining which line gets used.
             if key not in seen:
-                seen[key] = {
-                    "sport": sport_name,
-                    "projection_id": proj.get("id", str(len(seen))),
-                    "player_name": player_name,
-                    "team_abbr": player.get("team", ""),
-                    "event_home_abbr": "",
-                    "event_away_abbr": "",
-                    "position": player.get("position", ""),
-                    "stat_type": stat_type,
-                    "line": float(line),
-                    "start_time": attrs.get("start_time", ""),
-                    "pick_type": pick_type,
-                }
+                seen[key] = prop_dict
+            elif pick_type == "standard" and seen[key]["pick_type"] != "standard":
+                seen[key] = prop_dict
 
         return list(seen.values())
 
