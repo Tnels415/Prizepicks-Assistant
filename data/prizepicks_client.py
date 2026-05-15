@@ -8,7 +8,6 @@ from pathlib import Path
 import requests
 
 from config import SPORT_CONFIG, PRIZEPICKS_URL
-from data.draftkings_client import DraftKingsPropsClient
 
 logger = logging.getLogger(__name__)
 
@@ -189,17 +188,12 @@ PROPS_FILE_INSTRUCTIONS = """
 =======================================================
   ACTION REQUIRED: No prop lines available today
 =======================================================
-Neither The Odds API nor PrizePicks returned props.
+PrizePicks API did not return props (may be temporarily
+unavailable or blocking automated requests).
 A props.json file has been created for you to fill in.
 
-OPTION A — Get a free Odds API key (recommended):
-  1. Sign up at: https://the-odds-api.com
-  2. Free tier: 500 requests/month (resets monthly)
-  3. Add to .env:  THE_ODDS_API_KEY=your_key_here
-  4. Re-run: python3 main.py
-
-OPTION B — Fill props.json manually:
-  Edit props.json with today's lines, then re-run.
+Fill props.json manually with today's PrizePicks lines,
+then re-run: python3 main.py
 
 props.json format (remove these examples first):
   [
@@ -248,29 +242,10 @@ class OddsAPIClient:
     def fetch_props(self, sport_config: dict) -> list[dict]:
         """Return list of prop dicts for the given sport.
 
-        Source priority:
-          1. The Odds API (if API key present)
-          2. DraftKings sportsbook API (free, no key required)
-          3. PrizePicks live API (free, no key required)
-          4. Manual props.json fallback
+        Lines are sourced exclusively from PrizePicks so they always match
+        what is actually available to play. props.json is the manual fallback
+        when the PrizePicks API is unreachable.
         """
-        if self._odds_api_key:
-            props = self._fetch_from_odds_api(sport_config)
-            if props:
-                return props
-            logger.info(
-                "The Odds API returned no props for %s — trying DraftKings",
-                sport_config["name"],
-            )
-
-        props = DraftKingsPropsClient().fetch_props(sport_config)
-        if props:
-            return props
-        logger.info(
-            "DraftKings returned no props for %s — trying PrizePicks",
-            sport_config["name"],
-        )
-
         props = PrizePicksLiveClient().fetch_props(sport_config)
         if props:
             return props
