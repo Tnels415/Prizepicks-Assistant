@@ -12,7 +12,7 @@ from tenacity import (
 )
 
 from config import (
-    NBA_SEASON, NBA_SEASON_TYPE, NBA_API_TIMEOUT,
+    NBA_SEASON, NBA_SEASON_TYPE, NBA_SEASON_YEAR, NBA_API_TIMEOUT,
     NBA_API_RETRY_ATTEMPTS, NBA_API_RETRY_MIN_WAIT, NBA_API_RETRY_MAX_WAIT,
     BALLDONTLIE_BASE_URL,
 )
@@ -47,6 +47,26 @@ _BDL_GAME_LOG_DISABLED: bool = False
 # Set to True after stats.nba.com times out so subsequent players skip the
 # live call entirely and go straight to disk cache / BDL fallback.
 _NBA_API_UNAVAILABLE: bool = False
+
+# Set to True after the ESPN API returns an error so subsequent players skip it.
+_ESPN_UNAVAILABLE: bool = False
+
+_ESPN_SEARCH_URL = "https://site.api.espn.com/apis/common/v3/search"
+_ESPN_GAMELOG_URL = "https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{}/gamelog"
+
+# Maps ESPN gamelog label strings to our internal DataFrame column names.
+_ESPN_LABEL_MAP: dict[str, str] = {
+    "PTS": "PTS",
+    "REB": "REB",
+    "AST": "AST",
+    "STL": "STL",
+    "BLK": "BLK",
+    "TO":  "TOV",
+    "TOV": "TOV",
+    "3PM": "FG3M",
+    "3FGM": "FG3M",
+    "MIN": "MIN",
+}
 
 
 class NBAStatsClient:
@@ -118,6 +138,13 @@ class NBAStatsClient:
 
         # 2. Try live nba_api (skip if stats.nba.com already timed out this run).
         df = None if _NBA_API_UNAVAILABLE else self._fetch_game_log_nba_api(player_id)
+
+        # 3. ESPN unofficial API — free, no auth, reliable game logs.
+        if (df is None or df.empty) and not _ESPN_UNAVAILABLE:
+            player_name = self._id_to_name.get(player_id, "")
+            if player_name:
+                df = self._fetch_game_log_espn(player_name)
+
         if df is None or df.empty:
             # Look up the original search name so BallDontLie can find its own ID.
             player_name = self._id_to_name.get(player_id, "")
@@ -242,6 +269,119 @@ class NBAStatsClient:
             else:
                 logger.debug("BallDontLie game log failed for '%s': %s", player_name, exc)
             return None
+
+    def _find_espn_id(self, player_name: str) -> str | None:
+        try:
+            resp = requests.get(
+                _ESPN_SEARCH_URL,
+                params={
+                    "query": player_name,
+                    "limit": 5,
+                    "type": "athlete",
+                    "sport": "basketball",
+                    "league": "nba",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            if not items:
+                logger.debug("ESPN search: no results for '%s'", player_name)
+                return None
+            uid = items[0].get("uid", "")
+            if "~a:" not in uid:
+                return None
+            return uid.split("~a:")[-1]
+        except Exception as exc:
+            logger.debug("ESPN player search failed for '%s': %s", player_name, exc)
+            return None
+
+    def _fetch_game_log_espn(self, player_name: str) -> pd.DataFrame | None:
+        global _ESPN_UNAVAILABLE
+        espn_id = self._find_espn_id(player_name)
+        if espn_id is None:
+            return None
+        try:
+            url = _ESPN_GAMELOG_URL.format(espn_id)
+            resp = requests.get(
+                url,
+                params={"season": NBA_SEASON_YEAR},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            df = self._parse_espn_gamelog(resp.json())
+            if df is not None and not df.empty:
+                logger.debug("ESPN: fetched %d games for '%s'", len(df), player_name)
+            return df
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 404:
+                logger.debug("ESPN gamelog 404 for '%s' (ESPN id=%s)", player_name, espn_id)
+            else:
+                logger.warning("ESPN gamelog HTTP %s for '%s': %s", status, player_name, exc)
+                _ESPN_UNAVAILABLE = True
+            return None
+        except Exception as exc:
+            logger.debug("ESPN gamelog fetch failed for '%s': %s", player_name, exc)
+            return None
+
+    def _parse_espn_gamelog(self, data: dict) -> pd.DataFrame | None:
+        labels: list[str] = data.get("labels", [])
+        events: dict = data.get("events", {})
+        if not labels or not events:
+            return None
+
+        # Build a column-index map from label → position in stats array.
+        col_idx: dict[str, int] = {}
+        for i, lbl in enumerate(labels):
+            mapped = _ESPN_LABEL_MAP.get(lbl)
+            if mapped and mapped not in col_idx:
+                col_idx[mapped] = i
+
+        rows = []
+        for _event_id, event in events.items():
+            stats_arr = event.get("statistics", [])
+            if not stats_arr:
+                continue
+
+            home_away = event.get("homeAway", "").lower()
+            location = "Home" if home_away == "home" else "Away"
+            opp = (event.get("opponent") or {}).get("abbreviation", "")
+            raw_date = event.get("date", "")
+            try:
+                game_date = pd.to_datetime(raw_date, utc=True).tz_convert(None)
+            except Exception:
+                game_date = pd.NaT
+
+            def _stat(col: str) -> float:
+                idx = col_idx.get(col)
+                if idx is None or idx >= len(stats_arr):
+                    return 0.0
+                try:
+                    return float(stats_arr[idx])
+                except (TypeError, ValueError):
+                    return 0.0
+
+            rows.append({
+                "GAME_DATE":     game_date,
+                "MATCHUP":       opp,
+                "location":      location,
+                "opponent_abbr": opp,
+                "MIN":           str(int(_stat("MIN"))) if _stat("MIN") else "0",
+                "PTS":           _stat("PTS"),
+                "REB":           _stat("REB"),
+                "AST":           _stat("AST"),
+                "FG3M":          _stat("FG3M"),
+                "STL":           _stat("STL"),
+                "BLK":           _stat("BLK"),
+                "TOV":           _stat("TOV"),
+            })
+
+        if not rows:
+            return None
+        df = pd.DataFrame(rows)
+        df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+        return df
 
     @staticmethod
     def _parse_opponent_abbr(matchup: str) -> str:
