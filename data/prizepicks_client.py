@@ -311,7 +311,20 @@ class OddsAPIClient:
                 all_props.extend(event_props)
             except requests.exceptions.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else "?"
-                if code == 422:
+                if code == 401:
+                    try:
+                        api_msg = exc.response.json().get("message", exc.response.text[:200])
+                    except Exception:
+                        api_msg = "(no detail)"
+                    logger.error(
+                        "The Odds API: 401 Unauthorized fetching %s player props — %s. "
+                        "Your plan may not include player prop markets. "
+                        "Verify at the-odds-api.com that your subscription covers player props, "
+                        "or remove THE_ODDS_API_KEY from .env to skip directly to PrizePicks.",
+                        sport_name, api_msg,
+                    )
+                    break  # auth error won't recover for other games
+                elif code == 422:
                     # Batch request failed — try each market individually so one
                     # bad/unavailable market key doesn't block all the others.
                     recovered = self._get_event_props_individually(event, sport_config)
@@ -330,7 +343,14 @@ class OddsAPIClient:
                             "  %s vs %s — HTTP 422: %s", away, home, detail
                         )
                 else:
-                    logger.warning("  %s vs %s — HTTP %s, skipping", away, home, code)
+                    try:
+                        api_msg = exc.response.json().get("message", "") if exc.response is not None else ""
+                    except Exception:
+                        api_msg = ""
+                    logger.warning(
+                        "  %s vs %s — HTTP %s, skipping%s",
+                        away, home, code, f": {api_msg}" if api_msg else "",
+                    )
             except Exception as exc:
                 logger.warning("  %s vs %s — error: %s", away, home, exc)
 
