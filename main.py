@@ -133,7 +133,7 @@ def main() -> int:
         sender.send_report(cfg["email_to"], subject, html, plain)
 
     schedule = ScheduleClient()
-    odds_client = OddsAPIClient(odds_api_key=cfg.get("odds_api_key"))
+    odds_client = OddsAPIClient()
 
     # --- Per-sport analysis ------------------------------------------------
     results_by_sport: dict[str, list[PropResult]] = {}
@@ -159,10 +159,8 @@ def main() -> int:
         props = odds_client.fetch_props(sport_cfg)
         if not props:
             logger.warning(
-                "No %s props loaded — Odds API key missing/exhausted and "
-                "PrizePicks API unavailable. "
-                "Add THE_ODDS_API_KEY to .env (free at the-odds-api.com) "
-                "or manually fill props.json with today's lines.",
+                "No %s props loaded — PrizePicks API unavailable and props.json is empty. "
+                "Fill props.json with today's PrizePicks lines and re-run.",
                 sport_name,
             )
             props_failed_sports.append(sport_name)
@@ -243,20 +241,15 @@ def main() -> int:
             # Every sport with games today had props loading fail — it's a data source issue
             logger.error(
                 "No prop lines could be loaded for any sport (%s). "
-                "Fix options: "
-                "(1) Add THE_ODDS_API_KEY to .env — get a free key (500 req/month) at "
-                "the-odds-api.com and the key resets monthly; "
-                "(2) Manually fill props.json with today's lines and re-run.",
+                "The PrizePicks API is currently unavailable. "
+                "Manually fill props.json with today's PrizePicks lines and re-run.",
                 ", ".join(props_failed_sports),
             )
             msg = (
-                "No prop lines were available today — the Odds API key is missing or "
-                "exhausted, and the PrizePicks API is currently unavailable.<br><br>"
-                "<b>To fix:</b><br>"
-                "1. Get a free Odds API key (500 req/month) at "
-                "<a href='https://the-odds-api.com'>the-odds-api.com</a> "
-                "and add <code>THE_ODDS_API_KEY=your_key</code> to <code>.env</code>.<br>"
-                "2. Or manually fill <code>props.json</code> with today's lines and re-run."
+                "No prop lines were available today — the PrizePicks API is currently "
+                "unavailable.<br><br>"
+                "<b>To fix:</b> manually fill <code>props.json</code> with today's "
+                "PrizePicks lines and re-run."
             )
         else:
             logger.error(
