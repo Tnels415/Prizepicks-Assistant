@@ -240,6 +240,7 @@ SPORT_CONFIG: dict[str, dict] = {
             "Pts+Rebs": "Pts+Reb",
             "Rebs+Asts": "Reb+Ast",
         },
+        "dk_event_group_id": 42648,
     },
     "NHL": {
         "name": "NHL",
@@ -278,6 +279,7 @@ SPORT_CONFIG: dict[str, dict] = {
         "prizepicks_stat_map": {
             "Shots On Goal": "Shots on Goal",
         },
+        "dk_event_group_id": 42133,
     },
     "NFL": {
         "name": "NFL",
@@ -319,6 +321,7 @@ SPORT_CONFIG: dict[str, dict] = {
             "Pass TDs": "Passing TDs",
             "Rush Yards": "Rushing Yards",
         },
+        "dk_event_group_id": 88808,
     },
     "MLB": {
         "name": "MLB",
@@ -364,5 +367,6 @@ SPORT_CONFIG: dict[str, dict] = {
             "Pitcher Strikeouts": "Strikeouts",
             "Hitter Fantasy Score": None,   # unsupported composite — skip
         },
+        "dk_event_group_id": 40625,
     },
 }

@@ -8,6 +8,7 @@ from pathlib import Path
 import requests
 
 from config import SPORT_CONFIG, PRIZEPICKS_URL
+from data.draftkings_client import DraftKingsPropsClient
 
 logger = logging.getLogger(__name__)
 
@@ -249,17 +250,26 @@ class OddsAPIClient:
 
         Source priority:
           1. The Odds API (if API key present)
-          2. PrizePicks live API (free, no key required)
-          3. Manual props.json fallback
+          2. DraftKings sportsbook API (free, no key required)
+          3. PrizePicks live API (free, no key required)
+          4. Manual props.json fallback
         """
         if self._odds_api_key:
             props = self._fetch_from_odds_api(sport_config)
             if props:
                 return props
             logger.info(
-                "The Odds API returned no props for %s — trying PrizePicks",
+                "The Odds API returned no props for %s — trying DraftKings",
                 sport_config["name"],
             )
+
+        props = DraftKingsPropsClient().fetch_props(sport_config)
+        if props:
+            return props
+        logger.info(
+            "DraftKings returned no props for %s — trying PrizePicks",
+            sport_config["name"],
+        )
 
         props = PrizePicksLiveClient().fetch_props(sport_config)
         if props:
