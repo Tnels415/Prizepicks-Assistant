@@ -40,13 +40,13 @@ class NFLStatsClient(BaseStatsClient):
 
             name_lower = player_name.lower()
             # Exact match first
-            mask = roster["player_name"].str.lower() == name_lower
+            mask = roster["player_name"].fillna("").astype(str).str.lower() == name_lower
             match = roster[mask]
 
             if match.empty:
                 # Partial match (last name)
                 last = player_name.strip().split()[-1].lower()
-                mask2 = roster["player_name"].str.lower().str.endswith(last)
+                mask2 = roster["player_name"].fillna("").astype(str).str.lower().str.endswith(last)
                 match = roster[mask2]
 
             if match.empty:
