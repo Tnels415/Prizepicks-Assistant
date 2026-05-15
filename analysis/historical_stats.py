@@ -83,7 +83,7 @@ class HistoricalStatsCalculator:
         if "opponent_abbr" not in df.columns or not opponent_abbr:
             return {"hit_rate": 0.5, "avg": 0.0, "sample_size": 0, "reliable": False}
 
-        mask = df["opponent_abbr"].str.upper() == opponent_abbr.upper()
+        mask = df["opponent_abbr"].fillna("").astype(str).str.upper() == opponent_abbr.upper()
         h2h_df = df[mask].copy()
 
         if h2h_df.empty:
