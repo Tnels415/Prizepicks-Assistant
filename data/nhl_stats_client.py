@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 import requests
 
-from config import get_nhl_season
+from config import get_nhl_season, STATS_API_TIMEOUT
 from data.base_stats_client import BaseStatsClient
 from data.game_log_cache import GameLogCache
 
@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Module-level cache singleton shared across all NHLStatsClient instances.
 _GAME_LOG_CACHE = GameLogCache()
+
+# Set to True after the NHL API times out so remaining players skip live calls.
+_NHL_API_UNAVAILABLE: bool = False
 
 NHL_WEB_API = "https://api-web.nhle.com/v1"
 
@@ -145,13 +148,14 @@ class NHLStatsClient(BaseStatsClient):
             self._game_log_cache[player_id] = cached
             return cached
 
-        # 2. Try live NHL API.
+        # 2. Try live NHL API (skip if already timed out this run).
         season = get_nhl_season()
         rows: list[dict] = []
 
-        for game_type in (2, 3):   # 2 = regular season, 3 = playoffs
-            rows.extend(self._fetch_game_log(player_id, season, game_type))
-            time.sleep(0.3)
+        if not _NHL_API_UNAVAILABLE:
+            for game_type in (2, 3):   # 2 = regular season, 3 = playoffs
+                rows.extend(self._fetch_game_log(player_id, season, game_type))
+                time.sleep(0.3)
 
         if not rows:
             df = pd.DataFrame()
@@ -181,14 +185,23 @@ class NHLStatsClient(BaseStatsClient):
         try:
             resp = requests.get(
                 f"{NHL_WEB_API}/player/{player_id}/game-log/{season}/{game_type}",
-                timeout=15,
+                timeout=STATS_API_TIMEOUT,
             )
             if resp.status_code == 404:
                 return []
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.debug("NHL game log (type=%d) failed for player %d: %s", game_type, player_id, exc)
+            exc_str = str(exc).lower()
+            if "timed out" in exc_str or "timeout" in exc_str:
+                global _NHL_API_UNAVAILABLE
+                _NHL_API_UNAVAILABLE = True
+                logger.warning(
+                    "NHL stats API timed out — marking unavailable for this run; "
+                    "remaining players will use disk cache."
+                )
+            else:
+                logger.debug("NHL game log (type=%d) failed for player %d: %s", game_type, player_id, exc)
             return []
 
         rows = []

@@ -44,6 +44,10 @@ _PLAYER_USAGE_CACHE: dict[int, float] = {}
 # paid-only endpoint for every remaining player in the same run.
 _BDL_GAME_LOG_DISABLED: bool = False
 
+# Set to True after stats.nba.com times out so subsequent players skip the
+# live call entirely and go straight to disk cache / BDL fallback.
+_NBA_API_UNAVAILABLE: bool = False
+
 
 class NBAStatsClient:
 
@@ -112,8 +116,8 @@ class NBAStatsClient:
             _PLAYER_CACHE[player_id] = cached
             return cached
 
-        # 2. Try live nba_api.
-        df = self._fetch_game_log_nba_api(player_id)
+        # 2. Try live nba_api (skip if stats.nba.com already timed out this run).
+        df = None if _NBA_API_UNAVAILABLE else self._fetch_game_log_nba_api(player_id)
         if df is None or df.empty:
             # Look up the original search name so BallDontLie can find its own ID.
             player_name = self._id_to_name.get(player_id, "")
@@ -380,12 +384,24 @@ class NBAStatsClient:
     # -------------------------------------------------------------------------
 
     def _nba_api_call(self, endpoint_class, **kwargs):
+        global _NBA_API_UNAVAILABLE
         last_exc = None
         for attempt in range(NBA_API_RETRY_ATTEMPTS):
             try:
                 return endpoint_class(**kwargs)
             except Exception as exc:
                 last_exc = exc
+                exc_str = str(exc).lower()
+                is_timeout = "timed out" in exc_str or "timeout" in exc_str
+                if is_timeout:
+                    # stats.nba.com is hanging — mark it down for this run so
+                    # all remaining players skip the live call immediately.
+                    _NBA_API_UNAVAILABLE = True
+                    logger.warning(
+                        "stats.nba.com timed out — marking NBA stats API unavailable "
+                        "for this run; remaining players will use disk cache.",
+                    )
+                    break  # no point retrying a hanging server
                 wait = NBA_API_RETRY_MIN_WAIT * (2 ** attempt)
                 logger.debug(
                     "nba_api call %s attempt %d failed: %s — retrying in %ds",

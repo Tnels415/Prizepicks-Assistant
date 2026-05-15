@@ -7,6 +7,7 @@ from datetime import date
 import pandas as pd
 import requests
 
+from config import STATS_API_TIMEOUT
 from data.base_stats_client import BaseStatsClient
 from data.game_log_cache import GameLogCache
 
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Module-level cache singleton shared across all MLBStatsClient instances.
 _GAME_LOG_CACHE = GameLogCache()
+
+# Set to True after the MLB API times out so remaining players skip live calls.
+_MLB_API_UNAVAILABLE: bool = False
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
@@ -138,12 +142,18 @@ class MLBStatsClient(BaseStatsClient):
             self._game_log_cache[player_id] = cached
             return cached
 
-        # 2. Try live MLB Stats API.
+        # 2. Try live MLB Stats API (skip if already timed out this run).
         year = date.today().year
         # Fetch regular season + postseason so the log is complete during October playoffs.
-        hitting_dfs = [self._fetch_group(player_id, year, "hitting", gt) for gt in ("R", "P")]
+        hitting_dfs = (
+            [self._fetch_group(player_id, year, "hitting", gt) for gt in ("R", "P")]
+            if not _MLB_API_UNAVAILABLE else [pd.DataFrame(), pd.DataFrame()]
+        )
         time.sleep(0.3)
-        pitching_dfs = [self._fetch_group(player_id, year, "pitching", gt) for gt in ("R", "P")]
+        pitching_dfs = (
+            [self._fetch_group(player_id, year, "pitching", gt) for gt in ("R", "P")]
+            if not _MLB_API_UNAVAILABLE else [pd.DataFrame(), pd.DataFrame()]
+        )
 
         hitting_df = pd.concat([d for d in hitting_dfs if not d.empty], ignore_index=True) if any(not d.empty for d in hitting_dfs) else pd.DataFrame()
         pitching_df = pd.concat([d for d in pitching_dfs if not d.empty], ignore_index=True) if any(not d.empty for d in pitching_dfs) else pd.DataFrame()
@@ -196,7 +206,7 @@ class MLBStatsClient(BaseStatsClient):
                     "group": group,
                     "gameType": game_type,
                 },
-                timeout=15,
+                timeout=STATS_API_TIMEOUT,
             )
             if resp.status_code in (404, 204):
                 return pd.DataFrame()
@@ -204,7 +214,16 @@ class MLBStatsClient(BaseStatsClient):
             data = resp.json()
             splits = (data.get("stats") or [{}])[0].get("splits", [])
         except Exception as exc:
-            logger.debug("MLB game log (%s/%s) failed for player %d: %s", group, game_type, player_id, exc)
+            exc_str = str(exc).lower()
+            if "timed out" in exc_str or "timeout" in exc_str:
+                global _MLB_API_UNAVAILABLE
+                _MLB_API_UNAVAILABLE = True
+                logger.warning(
+                    "MLB stats API timed out — marking unavailable for this run; "
+                    "remaining players will use disk cache."
+                )
+            else:
+                logger.debug("MLB game log (%s/%s) failed for player %d: %s", group, game_type, player_id, exc)
             return pd.DataFrame()
 
         rows = []
