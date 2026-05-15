@@ -152,6 +152,9 @@ class PrizePicksLiveClient:
             if line is None:
                 continue
 
+            raw_rank = attrs.get("rank_type") or attrs.get("pick_type") or "standard"
+            pick_type = str(raw_rank).lower().strip()
+
             player_id = (
                 proj.get("relationships", {})
                     .get("new_player", {})
@@ -176,6 +179,7 @@ class PrizePicksLiveClient:
                     "stat_type": stat_type,
                     "line": float(line),
                     "start_time": attrs.get("start_time", ""),
+                    "pick_type": pick_type,
                 }
 
         return list(seen.values())
@@ -205,6 +209,10 @@ props.json format (remove these examples first):
     {"sport": "MLB", "player_name": "Player Name",
      "team_abbr": "LAD", "stat_type": "Hits", "line": 1.5}
   ]
+
+Optional flags (add to any entry):
+  "goblin": true  — PrizePicks goblin line (artificially low); UNDER suppressed
+  "demon":  true  — PrizePicks demon line  (artificially high); OVER  suppressed
 
 NBA stat types:  Points, Rebounds, Assists, 3-PT Made, Steals,
                  Blocks, Turnovers, Pts+Reb+Ast, Pts+Ast, Pts+Reb
@@ -447,6 +455,7 @@ class OddsAPIClient:
                         "stat_type": stat_type,
                         "line": float(point),
                         "start_time": event.get("commence_time", ""),
+                        "pick_type": "standard",
                     }
         return list(seen.values())
 
@@ -534,6 +543,13 @@ class OddsAPIClient:
             logger.warning("props.json entry %d: invalid line value — skipping", idx)
             return None
 
+        if entry.get("goblin"):
+            pick_type = "goblin"
+        elif entry.get("demon"):
+            pick_type = "demon"
+        else:
+            pick_type = "standard"
+
         return {
             "sport": sport_name,
             "projection_id": str(idx),
@@ -545,6 +561,7 @@ class OddsAPIClient:
             "stat_type": stat_type,
             "line": line,
             "start_time": "",
+            "pick_type": pick_type,
         }
 
     @staticmethod

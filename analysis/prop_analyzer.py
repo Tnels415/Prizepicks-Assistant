@@ -10,7 +10,7 @@ from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
-from config import SPORT_CONFIG
+from config import SPORT_CONFIG, GOBLIN_STD_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,28 @@ class PropAnalyzer:
         consistency = self._calc.calculate_consistency(game_log, stat_type, line)
         hit_rates   = self._calc.calculate_hit_rates_multi_window(game_log, stat_type, line)
 
+        # Goblin/demon detection — API pick_type takes precedence; std-dev heuristic is fallback
+        pick_type = prop.get("pick_type", "standard")
+        is_goblin = pick_type == "goblin"
+        is_demon  = pick_type == "demon"
+
+        if not is_goblin and not is_demon:
+            _std = consistency["std_dev"]
+            _avg = avgs["season_avg"]
+            if _std > 0 and _avg > 0:
+                if line < _avg - GOBLIN_STD_THRESHOLD * _std:
+                    is_goblin = True
+                    logger.debug(
+                        "Goblin heuristic: %s %s line=%.1f avg=%.1f std=%.1f",
+                        player_name, stat_type, line, _avg, _std,
+                    )
+                elif line > _avg + GOBLIN_STD_THRESHOLD * _std:
+                    is_demon = True
+                    logger.debug(
+                        "Demon heuristic: %s %s line=%.1f avg=%.1f std=%.1f",
+                        player_name, stat_type, line, _avg, _std,
+                    )
+
         delta_consistency = self._scorer.score_consistency(
             consistency["std_dev"], avgs["season_avg"], line
         )
@@ -303,10 +325,22 @@ class PropAnalyzer:
             hit_rate_10=hit_rates["hr_10"],
         )
 
-        return [
-            PropResult(direction="OVER",  hit_probability=over_prob,  **base_kwargs),
-            PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs),
-        ]
+        results = []
+        if not is_demon:
+            results.append(PropResult(direction="OVER",  hit_probability=over_prob,  **base_kwargs))
+        if not is_goblin:
+            results.append(PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs))
+        if is_goblin:
+            logger.info(
+                "Goblin — UNDER suppressed: %s %s (line=%.1f, avg=%.1f)",
+                player_name, stat_type, line, avgs["season_avg"],
+            )
+        if is_demon:
+            logger.info(
+                "Demon  — OVER  suppressed: %s %s (line=%.1f, avg=%.1f)",
+                player_name, stat_type, line, avgs["season_avg"],
+            )
+        return results
 
     def _determine_game_context(self, team_abbr: str) -> dict | None:
         team_abbr_upper = team_abbr.upper()

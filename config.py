@@ -108,6 +108,7 @@ NBA_API_RETRY_ATTEMPTS = 2
 NBA_API_RETRY_MIN_WAIT = 1
 NBA_API_RETRY_MAX_WAIT = 3
 STATS_API_TIMEOUT = 8       # shared timeout for NHL/MLB requests
+GOBLIN_STD_THRESHOLD = 1.5  # std devs below/above season avg to flag as goblin/demon
 
 PRIZEPICKS_HEADERS = {
     "User-Agent": (
