@@ -326,9 +326,12 @@ class PropAnalyzer:
         )
 
         results = []
-        if not is_demon:
-            results.append(PropResult(direction="OVER",  hit_probability=over_prob,  **base_kwargs))
-        if not is_goblin:
+        # PrizePicks only offers OVER on goblin and demon lines — UNDER is never
+        # available for either. Goblin = line set artificially low (easy OVER,
+        # reduced payout). Demon = line set artificially high (hard OVER, higher
+        # payout). In both cases the UNDER direction is blocked on PrizePicks.
+        results.append(PropResult(direction="OVER", hit_probability=over_prob, **base_kwargs))
+        if not is_goblin and not is_demon:
             results.append(PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs))
         if is_goblin:
             logger.info(
@@ -337,7 +340,7 @@ class PropAnalyzer:
             )
         if is_demon:
             logger.info(
-                "Demon  — OVER  suppressed: %s %s (line=%.1f, avg=%.1f)",
+                "Demon  — UNDER suppressed: %s %s (line=%.1f, avg=%.1f)",
                 player_name, stat_type, line, avgs["season_avg"],
             )
         return results
