@@ -225,9 +225,23 @@ class PrizePicksLiveClient:
         skipped_status: dict[str, int] = {}
         skipped_stat: dict[str, int] = {}
         rank_type_vals: dict[str, int] = {}
+        _sample_logged = 0   # log full attrs for first few projections to aid diagnostics
 
         for proj in all_projections:
             attrs = proj.get("attributes", {})
+
+            # Log a sample of raw attributes so we can identify the real goblin/demon field.
+            if _sample_logged < 5:
+                logger.debug(
+                    "PrizePicks %s projection attrs sample #%d: %s",
+                    sport_name, _sample_logged + 1,
+                    {k: v for k, v in attrs.items()
+                     if k in ("rank_type", "pick_type", "odds_type", "line_type",
+                               "projection_type", "is_promo", "payout_multiplier",
+                               "flash_sale_line_score", "discount_percentage",
+                               "stat_type", "line_score", "status")},
+                )
+                _sample_logged += 1
 
             # Only include lines not yet started
             status = attrs.get("status")
@@ -247,11 +261,36 @@ class PrizePicksLiveClient:
             if line is None:
                 continue
 
-            # PrizePicks uses rank_type to mark goblin/demon/standard.
-            # In practice rank_type is often null for all three variants,
-            # so we cannot rely on it alone. Log distinct values for diagnostics.
-            raw_rank = attrs.get("rank_type") or attrs.get("pick_type") or ""
-            pick_type = str(raw_rank).lower().strip() if raw_rank else "standard"
+            # Exhaustively check all known PrizePicks fields that may encode
+            # goblin/demon/standard. rank_type is null for ALL variants in current
+            # API responses, so we cannot rely on any single field — instead we
+            # check every candidate field and default to "unknown" (not "standard")
+            # when none are set. Using "unknown" as the default is intentional:
+            # it prevents false positives where null is misread as "standard".
+            pick_type = "unknown"
+            for field in ("rank_type", "pick_type", "odds_type", "line_type", "projection_type"):
+                raw_val = attrs.get(field)
+                if raw_val is not None and str(raw_val).strip():
+                    pick_type = str(raw_val).lower().strip()
+                    break
+            # payout_multiplier heuristic: values < 1.0 → goblin (reduced payout),
+            # values > 1.0 → demon (boosted payout), ~1.0 → standard.
+            if pick_type == "unknown":
+                multiplier = attrs.get("payout_multiplier")
+                if multiplier is not None:
+                    try:
+                        m = float(multiplier)
+                        if m < 0.97:
+                            pick_type = "goblin"
+                        elif m > 1.03:
+                            pick_type = "demon"
+                        else:
+                            pick_type = "standard"
+                    except (TypeError, ValueError):
+                        pass
+            # is_promo flag: goblin/demon lines are often promotions.
+            if pick_type == "unknown" and attrs.get("is_promo"):
+                pick_type = "promo"  # treat as non-standard
 
             player_id = (
                 proj.get("relationships", {})
@@ -285,12 +324,14 @@ class PrizePicksLiveClient:
         # Select the standard projection for each (player, stat).
         # PrizePicks returns up to three variants per prop (goblin, standard, demon).
         # Since rank_type is often null for all of them, we use line-value ordering.
-        # We also set `from_multiple_lines` to True when multiple variants existed —
-        # this is the only reliable signal that the chosen line is the standard one.
+        # n_variants records how many PP projections existed — this is the key signal:
+        #   n_variants == 1: unknown type — could be goblin, standard, or demon
+        #   n_variants == 2: unknown which two types — could be any combination
+        #   n_variants >= 3: middle-sorted line IS the standard line (definitively)
         for key, projs in candidates.items():
-            if len(projs) == 1:
+            n = len(projs)
+            if n == 1:
                 chosen = projs[0]
-                chosen["from_multiple_lines"] = False
             else:
                 # Try explicit rank_type first — only trust it when at least one
                 # projection is uniquely labeled "standard".
@@ -301,8 +342,8 @@ class PrizePicksLiveClient:
                 else:
                     # rank_type unreliable — use positional median by line value.
                     sorted_projs = sorted(projs, key=lambda p: p["line"])
-                    # For 2: index 0 (lower) handles standard+demon correctly.
-                    # For 3+: middle index = standard.
+                    # For 3+: middle index = standard (goblin < standard < demon).
+                    # For 2: middle index = 0 (lower) — uncertain which type.
                     mid_idx = (len(sorted_projs) - 1) // 2
                     chosen = sorted_projs[mid_idx]
                     logger.debug(
@@ -310,12 +351,13 @@ class PrizePicksLiveClient:
                         sport_name, len(projs), key[0], key[1],
                         [p["line"] for p in sorted_projs], chosen["line"],
                     )
-                chosen["from_multiple_lines"] = True
+            chosen["from_multiple_lines"] = n > 1
+            chosen["n_variants"] = n
             seen[key] = chosen
 
         logger.debug("PrizePicks %s: rank_type values seen: %s", sport_name, rank_type_vals)
         unknown_ranks = {k: v for k, v in rank_type_vals.items()
-                         if k not in ("standard", "goblin", "demon")}
+                         if k not in ("standard", "goblin", "demon", "unknown", "promo")}
         if unknown_ranks:
             logger.warning(
                 "PrizePicks %s: unrecognized rank_type values: %s — "
@@ -476,6 +518,10 @@ class PropLineClient:
         else:
             pick_type = "standard"
 
+        # Manual entries are explicitly typed via goblin/demon flags.
+        # Treat explicit "standard" (no flags) as n_variants=3 so the analyzer
+        # permits UNDER — the user is intentionally marking it as standard.
+        n_variants = 3 if pick_type == "standard" else 1
         return {
             "sport": sport_name,
             "projection_id": str(idx),
@@ -488,9 +534,8 @@ class PropLineClient:
             "line": line,
             "start_time": "",
             "pick_type": pick_type,
-            # Manual entries are explicitly typed via goblin/demon flags,
-            # so we trust pick_type as standard unless flagged otherwise.
             "from_multiple_lines": pick_type == "standard",
+            "n_variants": n_variants,
         }
 
     @staticmethod

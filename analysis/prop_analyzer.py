@@ -213,9 +213,11 @@ class PropAnalyzer:
         consistency = self._calc.calculate_consistency(game_log, stat_type, line)
         hit_rates   = self._calc.calculate_hit_rates_multi_window(game_log, stat_type, line)
 
-        # Goblin/demon detection — API pick_type takes precedence; std-dev heuristic is fallback
-        pick_type = prop.get("pick_type", "standard")
-        from_multiple = prop.get("from_multiple_lines", False)
+        # Goblin/demon detection — API pick_type takes precedence; std-dev heuristic is fallback.
+        # IMPORTANT: pick_type defaults to "unknown" (not "standard") when the API returns null,
+        # so pick_type == "unknown" means we genuinely don't know the line type.
+        pick_type = prop.get("pick_type", "unknown")
+        n_variants = prop.get("n_variants", 1)
         is_goblin = pick_type == "goblin"
         is_demon  = pick_type == "demon"
 
@@ -253,37 +255,23 @@ class PropAnalyzer:
                         player_name, stat_type, line, _avg,
                     )
 
-        # Conservative UNDER policy: if this prop came from a SINGLE PrizePicks
-        # projection (no sibling lines for comparison) AND we cannot verify the
-        # line falls within the player's normal range, the line might be a
-        # standalone goblin/demon that PrizePicks posted without a standard
-        # variant. In that case suppress UNDER to avoid suggesting picks the
-        # user can't actually place.
-        under_unverified = False
-        if not is_goblin and not is_demon and not from_multiple:
-            if _avg <= 0:
-                # No historical data at all — cannot verify line is normal.
-                under_unverified = True
-                logger.debug(
-                    "UNDER suppressed (unverified): %s %s line=%.1f — single PP line, no game history",
-                    player_name, stat_type, line,
-                )
-            elif _std > 0:
-                # Have std_dev — require line within 1 std-dev of avg to consider it "normal".
-                if abs(line - _avg) > _std:
-                    under_unverified = True
-                    logger.debug(
-                        "UNDER suppressed (unverified): %s %s line=%.1f avg=%.1f std=%.1f — single PP line outside ±1σ",
-                        player_name, stat_type, line, _avg, _std,
-                    )
-            else:
-                # Have avg but sparse games — require line within ±50% of avg.
-                if line > _avg * 1.5 or line < _avg * 0.67:
-                    under_unverified = True
-                    logger.debug(
-                        "UNDER suppressed (unverified): %s %s line=%.1f avg=%.1f — single PP line outside ±50%%",
-                        player_name, stat_type, line, _avg,
-                    )
+        # UNDER availability policy.
+        #
+        # PrizePicks only allows UNDER on standard lines, never on goblin or demon lines.
+        # The PrizePicks API returns rank_type=null for ALL projection types, so we cannot
+        # reliably determine line type from any single API field. The only situation where
+        # we can be confident a line is standard is when PrizePicks returned 3 variants
+        # for the same (player, stat): sorted as [goblin, standard, demon], the middle
+        # value is definitively the standard line.
+        #
+        # n_variants tracks how many PP projections existed:
+        #   1 → unknown type (could be standalone goblin, demon, or standard)
+        #   2 → unknown which two types were present
+        #   3 → middle = standard (UNDER safe to play)
+        #
+        # For manual props.json entries with no goblin/demon flag, n_variants is set to 3
+        # to indicate the user explicitly marked it as a standard line.
+        under_ok = (not is_goblin and not is_demon) and n_variants >= 3
 
         delta_consistency = self._scorer.score_consistency(
             consistency["std_dev"], avgs["season_avg"], line
@@ -377,14 +365,11 @@ class PropAnalyzer:
 
         results = []
         # PrizePicks only offers OVER on goblin and demon lines — UNDER is never
-        # available for either. Goblin = line set artificially low (easy OVER,
-        # reduced payout). Demon = line set artificially high (hard OVER, higher
-        # payout). In both cases the UNDER direction is blocked on PrizePicks.
-        # Also suppress UNDER when the line came from a single PrizePicks
-        # projection that we cannot verify against player history — it may
-        # silently be a standalone goblin/demon variant.
+        # available for either. Goblin = artificially low line (easy OVER, reduced payout).
+        # Demon = artificially high line (hard OVER, boosted payout).
+        # UNDER is only safe when we know the line is standard (n_variants >= 3).
         results.append(PropResult(direction="OVER", hit_probability=over_prob, **base_kwargs))
-        if not is_goblin and not is_demon and not under_unverified:
+        if under_ok:
             results.append(PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs))
         if is_goblin:
             logger.info(
@@ -396,11 +381,11 @@ class PropAnalyzer:
                 "Demon  — UNDER suppressed: %s %s (line=%.1f, avg=%.1f)",
                 player_name, stat_type, line, avgs["season_avg"],
             )
-        elif under_unverified:
+        elif not under_ok:
             logger.info(
-                "Unverified — UNDER suppressed: %s %s (line=%.1f, avg=%.1f) — "
-                "single PrizePicks line with no way to confirm it is the standard variant",
-                player_name, stat_type, line, avgs["season_avg"],
+                "UNDER suppressed (ambiguous line type): %s %s (line=%.1f, avg=%.1f) — "
+                "%d PP variant(s); need 3 to confirm standard. Only OVER is safe.",
+                player_name, stat_type, line, avgs["season_avg"], n_variants,
             )
         return results
 
