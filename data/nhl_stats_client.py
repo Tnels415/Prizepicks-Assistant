@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import requests
 
-from config import get_nhl_season, STATS_API_TIMEOUT
+from config import get_nhl_season, STATS_API_TIMEOUT, NHL_GOALIE_FANTASY_FORMULA
 from data.base_stats_client import BaseStatsClient
 from data.game_log_cache import GameLogCache
 
@@ -33,6 +35,65 @@ _NHL_TEAMS = [
 # Built once per process from team rosters; avoids the broken search endpoint.
 _NHL_PLAYER_DB: dict[str, int] = {}
 _NHL_DB_LOADED: bool = False
+
+# Per-game faceoff counts sourced from boxscores.  Keyed by "{game_id}_{player_id}".
+# Past game results never change so there is no TTL — data is written once and
+# reused forever.  Stored as [fow, foa] lists for JSON round-trip compatibility.
+_FACEOFF_CACHE_PATH = Path("cache/nhl_faceoffs.json")
+_FACEOFF_CACHE: dict[str, list[float]] | None = None
+
+
+def _load_faceoff_cache() -> dict[str, list[float]]:
+    global _FACEOFF_CACHE
+    if _FACEOFF_CACHE is not None:
+        return _FACEOFF_CACHE
+    if _FACEOFF_CACHE_PATH.exists():
+        try:
+            _FACEOFF_CACHE = json.loads(_FACEOFF_CACHE_PATH.read_text())
+        except Exception:
+            _FACEOFF_CACHE = {}
+    else:
+        _FACEOFF_CACHE = {}
+    return _FACEOFF_CACHE
+
+
+def _save_faceoff_cache() -> None:
+    try:
+        _FACEOFF_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FACEOFF_CACHE_PATH.write_text(json.dumps(_FACEOFF_CACHE))
+    except Exception as exc:
+        logger.debug("Failed to persist faceoff cache: %s", exc)
+
+
+def _compute_goalie_scores(df: pd.DataFrame) -> pd.Series:
+    """Compute PrizePicks Goalie Fantasy Score for each game row.
+
+    Formula weights come from config.NHL_GOALIE_FANTASY_FORMULA.
+    For skaters DECISION == '' so the result is 0 — only goalie rows
+    produce non-zero scores.
+
+    NOTE: The exact PrizePicks formula is not publicly documented.  The
+    weights in config are a community approximation.  Verify inside the
+    PrizePicks app (tap the scoring-chart icon on any Goalie Fantasy Score
+    prop) and update config.NHL_GOALIE_FANTASY_FORMULA accordingly.
+    """
+    f = NHL_GOALIE_FANTASY_FORMULA
+    saves    = df["SAVES"].fillna(0)
+    ga       = df["GA"].fillna(0)
+    decision = df["DECISION"].fillna("")
+
+    win_pts     = decision.map({"W": f["win"], "OT": f["ot_loss"]}).fillna(0.0)
+    # Shutout only when the goalie played a full game (has a decision) and let 0 in
+    shutout_pts = (
+        (ga == 0) & decision.isin(["W", "L", "OT"])
+    ).astype(float) * f["shutout_bonus"]
+
+    return (
+        saves * f["save"]
+        + win_pts
+        + shutout_pts
+        + ga * f["goal_against"]
+    )
 
 
 def _name_str(v) -> str:
@@ -176,6 +237,9 @@ class NHLStatsClient(BaseStatsClient):
             df = pd.DataFrame(rows)
             df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+            # Compute derived columns before caching so they survive the CSV round-trip.
+            df["GOALIE_SCORE"] = _compute_goalie_scores(df)
+            df = self._enrich_game_log_faceoffs(df, player_id)
 
         # 3. On success, persist to disk cache.
         if not df.empty:
@@ -279,6 +343,100 @@ class NHLStatsClient(BaseStatsClient):
         return rows
 
     # -------------------------------------------------------------------------
+    # Faceoff enrichment — boxscore lookups for per-game FOW/FOA counts
+    # -------------------------------------------------------------------------
+
+    def _enrich_game_log_faceoffs(self, df: pd.DataFrame, player_id: int) -> pd.DataFrame:
+        """Fill FOW/FOA columns from boxscore data for games where FO_PCTG > 0
+        but we only have the percentage (game log doesn't include raw counts).
+        Results are persisted in cache/nhl_faceoffs.json — past games are cached
+        indefinitely since their stats never change.
+        """
+        if not {"FOW", "FO_PCTG", "GAME_ID"}.issubset(df.columns):
+            return df
+
+        needs = df[(df["FO_PCTG"] > 0) & (df["FOW"] == 0)]
+        if needs.empty:
+            return df
+
+        cache = _load_faceoff_cache()
+        cache_updated = False
+        fetched = 0
+
+        for _, row in needs.iterrows():
+            game_id = str(row["GAME_ID"]).strip()
+            if not game_id:
+                continue
+            cache_key = f"{game_id}_{player_id}"
+            if cache_key in cache:
+                fow, foa = cache[cache_key]
+            else:
+                if fetched >= 15:   # cap live calls to avoid excess API load
+                    break
+                result = self._fetch_faceoffs_from_boxscore(game_id, player_id)
+                fetched += 1
+                time.sleep(0.2)
+                if result is None:
+                    continue
+                fow, foa = result
+                cache[cache_key] = [fow, foa]
+                cache_updated = True
+
+            mask = df["GAME_ID"] == game_id
+            df.loc[mask, "FOW"] = fow
+            df.loc[mask, "FOA"] = foa
+
+        if cache_updated:
+            _save_faceoff_cache()
+        if fetched:
+            logger.info(
+                "NHL faceoff enrichment: %d boxscore(s) fetched for player %d",
+                fetched, player_id,
+            )
+        return df
+
+    def _fetch_faceoffs_from_boxscore(
+        self, game_id: str, player_id: int
+    ) -> tuple[float, float] | None:
+        """Return (faceoffs_won, faceoffs_taken) for player in a specific game."""
+        url = f"{NHL_WEB_API}/gamecenter/{game_id}/boxscore"
+        try:
+            resp = requests.get(url, timeout=STATS_API_TIMEOUT)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.debug("NHL boxscore fetch failed game %s: %s", game_id, exc)
+            return None
+
+        for team_key in ("homeTeam", "awayTeam"):
+            team = data.get("playerByGameStats", {}).get(team_key, {})
+            for group in ("forwards", "defense", "defensemen"):
+                for player in team.get(group, []):
+                    if player.get("playerId") == player_id:
+                        fow = float(
+                            player.get("faceoffWins")
+                            or player.get("faceoffsWon")
+                            or 0
+                        )
+                        foa = float(
+                            player.get("faceoffsTaken")
+                            or player.get("faceoffsAttempted")
+                            or 0
+                        )
+                        logger.debug(
+                            "Boxscore game %s player %d: FOW=%.0f FOA=%.0f",
+                            game_id, player_id, fow, foa,
+                        )
+                        return fow, foa
+
+        logger.debug(
+            "NHL boxscore game %s: player %d not found in skater lists", game_id, player_id
+        )
+        return None
+
+    # -------------------------------------------------------------------------
     # Team stats (not available → return empty; factors degrade gracefully)
     # -------------------------------------------------------------------------
 
@@ -302,7 +460,8 @@ class NHLStatsClient(BaseStatsClient):
             stats = {
                 col: float(row[col])
                 for col in ("G", "A", "PTS", "SOG", "PPP", "HITS",
-                            "BLKS", "PLUSMINUS", "TOI", "SAVES", "GA")
+                            "BLKS", "PLUSMINUS", "TOI", "SAVES", "GA",
+                            "FOW", "GOALIE_SCORE")
                 if col in row.index
             }
             stats["played"] = True

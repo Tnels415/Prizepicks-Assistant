@@ -110,6 +110,18 @@ NBA_API_RETRY_MAX_WAIT = 3
 STATS_API_TIMEOUT = 8       # shared timeout for NHL/MLB requests
 GOBLIN_STD_THRESHOLD = 1.5  # std devs below/above season avg to flag as goblin/demon
 
+# PrizePicks NHL Goalie Fantasy Score formula weights.
+# NOTE: PrizePicks does not publicly document this formula — these values are a
+# community approximation.  Verify by opening any Goalie Fantasy Score prop inside
+# the PrizePicks app and tapping the scoring-chart info icon, then update here.
+NHL_GOALIE_FANTASY_FORMULA: dict[str, float] = {
+    "save":           0.6,    # points per save
+    "win":            6.0,    # points for a win decision
+    "ot_loss":        2.0,    # points for an OT/SO loss
+    "shutout_bonus":  4.0,    # bonus points when goals_against == 0
+    "goal_against":  -1.8,    # points per goal allowed (negative)
+}
+
 PRIZEPICKS_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -270,6 +282,8 @@ SPORT_CONFIG: dict[str, dict] = {
             "Time On Ice": "TOI",
             "Goalie Saves": "SAVES",
             "Goals Allowed": "GA",
+            "Faceoffs Won": "FOW",
+            "Goalie Fantasy Score": "GOALIE_SCORE",
         },
         "combo_stat_map": {},
         "opponent_stat_col": {},   # NHL team-defense stats not readily available
@@ -278,10 +292,12 @@ SPORT_CONFIG: dict[str, dict] = {
             "Shots on Goal": "SOG", "Power Play Points": "PPP",
             "Hits": "HITS", "Blocked Shots": "BLKS", "Plus/Minus": "PLUSMINUS",
             "Time On Ice": "TOI", "Goalie Saves": "SAVES", "Goals Allowed": "GA",
+            "Faceoffs Won": "FOW", "Goalie Fantasy Score": "GOALIE_SCORE",
         },
         "counting_stats": {
             "Points", "Goals", "Assists", "Shots on Goal",
             "Hits", "Blocked Shots", "Goalie Saves", "Time On Ice",
+            "Faceoffs Won", "Goalie Fantasy Score",
         },
         "team_name_to_abbr": NHL_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NHLStatsClient",
@@ -289,10 +305,8 @@ SPORT_CONFIG: dict[str, dict] = {
         "prizepicks_league_id": 12,
         "prizepicks_stat_map": {
             "Shots On Goal": "Shots on Goal",
-            # Explicit skips — unsupported or no per-game count in the API
-            "Faceoffs Won": None,           # API provides win%, not count
-            "Goalie Fantasy Score": None,   # composite/unsupported
-            "Shots On Goal (Combo)": None,  # ambiguous combo stat
+            # Explicit skip — ambiguous combo stat with no clean mapping
+            "Shots On Goal (Combo)": None,
         },
         "dk_event_group_id": 42133,
     },
