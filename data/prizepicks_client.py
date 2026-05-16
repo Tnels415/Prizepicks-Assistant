@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 PROPS_FILE = Path("props.json")
 
 
+# Module-level cache of PrizePicks league name → ID, fetched lazily on first
+# request.  Avoids hardcoding league_ids that PrizePicks may change.
+_PP_LEAGUE_MAP: dict[str, int] | None = None
+
+# Sport name → list of PrizePicks league name patterns to match (case-insensitive
+# substring match against the league's "name" attribute in the /leagues response).
+_PP_LEAGUE_NAME_PATTERNS = {
+    "NBA": ["NBA"],
+    "NHL": ["NHL"],
+    "NFL": ["NFL"],
+    "MLB": ["MLB"],
+}
+
+
 _PP_HEADER_VARIANTS = [
     # Variant 1: Desktop Chrome (original)
     {
@@ -62,10 +76,33 @@ class PrizePicksLiveClient:
     """
 
     def fetch_props(self, sport_config: dict) -> list[dict]:
-        league_id = sport_config.get("prizepicks_league_id")
-        if not league_id:
+        sport_name = sport_config["name"]
+
+        # Try the configured league_id first; if it returns 0 props (likely wrong
+        # ID), look up the correct ID via the leagues endpoint and retry once.
+        configured_id = sport_config.get("prizepicks_league_id")
+        if not configured_id:
             return []
 
+        props = self._fetch_with_league_id(configured_id, sport_config)
+        if props:
+            return props
+
+        # Configured ID returned nothing useful — try dynamic lookup.
+        discovered_id = self._lookup_league_id(sport_name)
+        if discovered_id and discovered_id != configured_id:
+            logger.warning(
+                "PrizePicks %s: configured league_id=%s returned no props; "
+                "retrying with discovered league_id=%s. Update config.py to make this permanent.",
+                sport_name, configured_id, discovered_id,
+            )
+            props = self._fetch_with_league_id(discovered_id, sport_config)
+            if props:
+                return props
+
+        return []
+
+    def _fetch_with_league_id(self, league_id: int, sport_config: dict) -> list[dict]:
         sport_name = sport_config["name"]
         params = {"league_id": league_id, "per_page": 250, "single_stat": "true"}
 
@@ -87,8 +124,8 @@ class PrizePicksLiveClient:
                 data = resp.json()
                 props = self._parse(data, sport_config)
                 logger.info(
-                    "PrizePicks API: %d %s props fetched (header variant %d)",
-                    len(props), sport_name, i + 1,
+                    "PrizePicks API: %d %s props fetched (league_id=%s, variant %d)",
+                    len(props), sport_name, league_id, i + 1,
                 )
                 return props
             except requests.exceptions.HTTPError:
@@ -98,11 +135,61 @@ class PrizePicksLiveClient:
                 break
 
         logger.warning(
-            "PrizePicks API unavailable for %s — all %d header variants returned 403 or error. "
-            "PrizePicks may have added bot protection. Fill props.json manually and re-run.",
-            sport_name, len(_PP_HEADER_VARIANTS),
+            "PrizePicks API unavailable for %s (league_id=%s) — all %d header variants returned 403 or error.",
+            sport_name, league_id, len(_PP_HEADER_VARIANTS),
         )
         return []
+
+    def _lookup_league_id(self, sport_name: str) -> int | None:
+        """Fetch /leagues and resolve sport_name → league_id by name match."""
+        global _PP_LEAGUE_MAP
+        if _PP_LEAGUE_MAP is None:
+            _PP_LEAGUE_MAP = self._fetch_leagues()
+        if not _PP_LEAGUE_MAP:
+            return None
+        patterns = _PP_LEAGUE_NAME_PATTERNS.get(sport_name, [sport_name])
+        for pattern in patterns:
+            for league_name, league_id in _PP_LEAGUE_MAP.items():
+                if pattern.lower() == league_name.lower():
+                    return league_id
+        # Substring fallback
+        for pattern in patterns:
+            for league_name, league_id in _PP_LEAGUE_MAP.items():
+                if pattern.lower() in league_name.lower():
+                    return league_id
+        logger.warning(
+            "PrizePicks: no league_id found for %s. Available leagues: %s",
+            sport_name, sorted(_PP_LEAGUE_MAP.keys()),
+        )
+        return None
+
+    def _fetch_leagues(self) -> dict[str, int]:
+        """Fetch the public PrizePicks /leagues endpoint and return name → id map."""
+        for headers in _PP_HEADER_VARIANTS:
+            try:
+                resp = requests.get(
+                    "https://api.prizepicks.com/leagues",
+                    headers=headers,
+                    timeout=15,
+                )
+                if resp.status_code == 403:
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                mapping: dict[str, int] = {}
+                for obj in data.get("data", []):
+                    name = obj.get("attributes", {}).get("name", "")
+                    try:
+                        lid = int(obj.get("id"))
+                    except (TypeError, ValueError):
+                        continue
+                    if name:
+                        mapping[name] = lid
+                logger.info("PrizePicks /leagues: discovered %d leagues", len(mapping))
+                return mapping
+            except Exception as exc:
+                logger.debug("PrizePicks /leagues fetch failed: %s", exc)
+        return {}
 
     def _parse(self, data: dict, sport_config: dict) -> list[dict]:
         sport_name = sport_config["name"]
@@ -197,15 +284,13 @@ class PrizePicksLiveClient:
 
         # Select the standard projection for each (player, stat).
         # PrizePicks returns up to three variants per prop (goblin, standard, demon).
-        # Since rank_type is often null for all of them, we use line-value ordering:
-        #   - 1 projection  → use it as-is.
-        #   - 3+ projections → sort by line; the middle value is always the standard.
-        #   - 2 projections → use the lower line.  When paired as standard+demon the
-        #     lower IS the standard.  When paired as goblin+standard the lower is the
-        #     goblin, which the std-dev / ratio heuristic in prop_analyzer will catch.
+        # Since rank_type is often null for all of them, we use line-value ordering.
+        # We also set `from_multiple_lines` to True when multiple variants existed —
+        # this is the only reliable signal that the chosen line is the standard one.
         for key, projs in candidates.items():
             if len(projs) == 1:
                 chosen = projs[0]
+                chosen["from_multiple_lines"] = False
             else:
                 # Try explicit rank_type first — only trust it when at least one
                 # projection is uniquely labeled "standard".
@@ -216,7 +301,8 @@ class PrizePicksLiveClient:
                 else:
                     # rank_type unreliable — use positional median by line value.
                     sorted_projs = sorted(projs, key=lambda p: p["line"])
-                    # For 2: index 0 (lower); for 3: index 1 (middle); for 4+: lower-middle.
+                    # For 2: index 0 (lower) handles standard+demon correctly.
+                    # For 3+: middle index = standard.
                     mid_idx = (len(sorted_projs) - 1) // 2
                     chosen = sorted_projs[mid_idx]
                     logger.debug(
@@ -224,6 +310,7 @@ class PrizePicksLiveClient:
                         sport_name, len(projs), key[0], key[1],
                         [p["line"] for p in sorted_projs], chosen["line"],
                     )
+                chosen["from_multiple_lines"] = True
             seen[key] = chosen
 
         logger.debug("PrizePicks %s: rank_type values seen: %s", sport_name, rank_type_vals)
@@ -401,6 +488,9 @@ class PropLineClient:
             "line": line,
             "start_time": "",
             "pick_type": pick_type,
+            # Manual entries are explicitly typed via goblin/demon flags,
+            # so we trust pick_type as standard unless flagged otherwise.
+            "from_multiple_lines": pick_type == "standard",
         }
 
     @staticmethod

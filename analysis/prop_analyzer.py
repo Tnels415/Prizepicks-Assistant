@@ -215,12 +215,14 @@ class PropAnalyzer:
 
         # Goblin/demon detection — API pick_type takes precedence; std-dev heuristic is fallback
         pick_type = prop.get("pick_type", "standard")
+        from_multiple = prop.get("from_multiple_lines", False)
         is_goblin = pick_type == "goblin"
         is_demon  = pick_type == "demon"
 
+        _std = consistency["std_dev"]
+        _avg = avgs["season_avg"]
+
         if not is_goblin and not is_demon:
-            _std = consistency["std_dev"]
-            _avg = avgs["season_avg"]
             if _std > 0 and _avg > 0:
                 # Primary heuristic: line is more than N std-devs from the mean.
                 if line < _avg - GOBLIN_STD_THRESHOLD * _std:
@@ -248,6 +250,38 @@ class PropAnalyzer:
                     is_goblin = True
                     logger.debug(
                         "Goblin ratio fallback: %s %s line=%.1f avg=%.1f",
+                        player_name, stat_type, line, _avg,
+                    )
+
+        # Conservative UNDER policy: if this prop came from a SINGLE PrizePicks
+        # projection (no sibling lines for comparison) AND we cannot verify the
+        # line falls within the player's normal range, the line might be a
+        # standalone goblin/demon that PrizePicks posted without a standard
+        # variant. In that case suppress UNDER to avoid suggesting picks the
+        # user can't actually place.
+        under_unverified = False
+        if not is_goblin and not is_demon and not from_multiple:
+            if _avg <= 0:
+                # No historical data at all — cannot verify line is normal.
+                under_unverified = True
+                logger.debug(
+                    "UNDER suppressed (unverified): %s %s line=%.1f — single PP line, no game history",
+                    player_name, stat_type, line,
+                )
+            elif _std > 0:
+                # Have std_dev — require line within 1 std-dev of avg to consider it "normal".
+                if abs(line - _avg) > _std:
+                    under_unverified = True
+                    logger.debug(
+                        "UNDER suppressed (unverified): %s %s line=%.1f avg=%.1f std=%.1f — single PP line outside ±1σ",
+                        player_name, stat_type, line, _avg, _std,
+                    )
+            else:
+                # Have avg but sparse games — require line within ±50% of avg.
+                if line > _avg * 1.5 or line < _avg * 0.67:
+                    under_unverified = True
+                    logger.debug(
+                        "UNDER suppressed (unverified): %s %s line=%.1f avg=%.1f — single PP line outside ±50%%",
                         player_name, stat_type, line, _avg,
                     )
 
@@ -346,17 +380,26 @@ class PropAnalyzer:
         # available for either. Goblin = line set artificially low (easy OVER,
         # reduced payout). Demon = line set artificially high (hard OVER, higher
         # payout). In both cases the UNDER direction is blocked on PrizePicks.
+        # Also suppress UNDER when the line came from a single PrizePicks
+        # projection that we cannot verify against player history — it may
+        # silently be a standalone goblin/demon variant.
         results.append(PropResult(direction="OVER", hit_probability=over_prob, **base_kwargs))
-        if not is_goblin and not is_demon:
+        if not is_goblin and not is_demon and not under_unverified:
             results.append(PropResult(direction="UNDER", hit_probability=under_prob, **base_kwargs))
         if is_goblin:
             logger.info(
                 "Goblin — UNDER suppressed: %s %s (line=%.1f, avg=%.1f)",
                 player_name, stat_type, line, avgs["season_avg"],
             )
-        if is_demon:
+        elif is_demon:
             logger.info(
                 "Demon  — UNDER suppressed: %s %s (line=%.1f, avg=%.1f)",
+                player_name, stat_type, line, avgs["season_avg"],
+            )
+        elif under_unverified:
+            logger.info(
+                "Unverified — UNDER suppressed: %s %s (line=%.1f, avg=%.1f) — "
+                "single PrizePicks line with no way to confirm it is the standard variant",
                 player_name, stat_type, line, avgs["season_avg"],
             )
         return results
