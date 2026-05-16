@@ -259,25 +259,40 @@ SPORT_CONFIG: dict[str, dict] = {
             "player_power_play_points": "Power Play Points",
         },
         "prop_stat_map": {
-            "Points": "PTS",       # pre-computed G+A in NHLStatsClient
+            "Points": "PTS",             # G+A pre-computed in NHLStatsClient
             "Goals": "G",
             "Assists": "A",
             "Shots on Goal": "SOG",
             "Power Play Points": "PPP",
+            "Hits": "HITS",
+            "Blocked Shots": "BLKS",
+            "Plus/Minus": "PLUSMINUS",
+            "Time On Ice": "TOI",
+            "Goalie Saves": "SAVES",
+            "Goals Allowed": "GA",
         },
         "combo_stat_map": {},
         "opponent_stat_col": {},   # NHL team-defense stats not readily available
         "outcome_stat_map": {
             "Points": "PTS", "Goals": "G", "Assists": "A",
             "Shots on Goal": "SOG", "Power Play Points": "PPP",
+            "Hits": "HITS", "Blocked Shots": "BLKS", "Plus/Minus": "PLUSMINUS",
+            "Time On Ice": "TOI", "Goalie Saves": "SAVES", "Goals Allowed": "GA",
         },
-        "counting_stats": {"Points", "Goals", "Assists", "Shots on Goal"},
+        "counting_stats": {
+            "Points", "Goals", "Assists", "Shots on Goal",
+            "Hits", "Blocked Shots", "Goalie Saves", "Time On Ice",
+        },
         "team_name_to_abbr": NHL_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NHLStatsClient",
         "emoji": "🏒",
         "prizepicks_league_id": 12,
         "prizepicks_stat_map": {
             "Shots On Goal": "Shots on Goal",
+            # Explicit skips — unsupported or no per-game count in the API
+            "Faceoffs Won": None,           # API provides win%, not count
+            "Goalie Fantasy Score": None,   # composite/unsupported
+            "Shots On Goal (Combo)": None,  # ambiguous combo stat
         },
         "dk_event_group_id": 42133,
     },

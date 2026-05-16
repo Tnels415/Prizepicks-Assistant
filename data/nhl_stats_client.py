@@ -42,6 +42,19 @@ def _name_str(v) -> str:
     return v.get("default", "") if isinstance(v, dict) else str(v)
 
 
+def _toi_to_minutes(toi_str) -> float:
+    """Convert NHL API 'MM:SS' time-on-ice string to decimal minutes."""
+    try:
+        parts = str(toi_str).split(":")
+        if len(parts) == 2:
+            return int(parts[0]) + int(parts[1]) / 60.0
+        if len(parts) == 3:
+            return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 60.0
+        return float(toi_str)
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 def _build_nhl_player_db() -> None:
     """Populate _NHL_PLAYER_DB from every team's current roster."""
     global _NHL_PLAYER_DB, _NHL_DB_LOADED
@@ -215,12 +228,19 @@ class NHLStatsClient(BaseStatsClient):
                 "MATCHUP": f"{team_abbr} {vs_str} {opp_abbr}",
                 "location": "Home" if is_home else "Away",
                 "opponent_abbr": opp_abbr,
-                "G": float(g.get("goals", 0)),
-                "A": float(g.get("assists", 0)),
-                "PTS": float(g.get("points", 0)),
-                "SOG": float(g.get("shots", 0)),
-                "PPP": float(g.get("powerPlayPoints", 0)),
-                "HITS": float(g.get("hits", 0)),
+                # Skater stats
+                "G":        float(g.get("goals", 0)),
+                "A":        float(g.get("assists", 0)),
+                "PTS":      float(g.get("points", 0)),
+                "SOG":      float(g.get("shots", 0)),
+                "PPP":      float(g.get("powerPlayPoints", 0)),
+                "HITS":     float(g.get("hits", 0)),
+                "BLKS":     float(g.get("blockedShots", 0)),
+                "PLUSMINUS": float(g.get("plusMinus", 0)),
+                "TOI":      _toi_to_minutes(g.get("toi", "0:00")),
+                # Goalie stats (zero for skaters; populated for goalies)
+                "SAVES":    float(g.get("saves", 0)),
+                "GA":       float(g.get("goalsAgainst", 0)),
             })
         return rows
 
@@ -247,7 +267,8 @@ class NHLStatsClient(BaseStatsClient):
             row = rows.iloc[0]
             stats = {
                 col: float(row[col])
-                for col in ("G", "A", "PTS", "SOG", "PPP", "HITS")
+                for col in ("G", "A", "PTS", "SOG", "PPP", "HITS",
+                            "BLKS", "PLUSMINUS", "TOI", "SAVES", "GA")
                 if col in row.index
             }
             stats["played"] = True
