@@ -133,20 +133,14 @@ def render_email_html(
         emoji = cfg.get("emoji", "")
         full_name = cfg.get("full_name", sport_name)
 
-        overs  = [r for r in sport_results if r.direction == "OVER"][:10]
-        unders = [r for r in sport_results if r.direction == "UNDER"][:10]
-
         sport_sections_html += f"""
   <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
     {emoji} {full_name}
   </div>"""
-        sport_sections_html += _render_direction_table(overs,  "&#9650; Top 10 Overs",  "#28a745")
-        sport_sections_html += _render_direction_table(unders, "&#9660; Top 10 Unders", "#e67e22")
+        sport_sections_html += _render_picks_table(sport_results[:10])
         sport_sections_html += '<div style="margin-bottom:12px"></div>'
 
     total_props = len(all_results)
-    n_overs  = sum(1 for r in all_results if r.direction == "OVER")
-    n_unders = sum(1 for r in all_results if r.direction == "UNDER")
     n_sports = len([s for s, r in results_by_sport.items() if r])
 
     return f"""<!DOCTYPE html>
@@ -190,7 +184,7 @@ def render_email_html(
   <div class="header">
     <h1>Multi-Sport Prop Picks &mdash; {date_str}</h1>
     <div class="meta">
-      <span>&#9650; {n_overs} Overs &nbsp;&#9660; {n_unders} Unders</span>
+      <span>&#127919; {total_props} Picks</span>
       <span>&#128994; {len(high_conf)} High Confidence (&gt;65%)</span>
       <span>&#127931; {n_sports} Sport{"s" if n_sports != 1 else ""} Active</span>
       <span>&#9201; {duration_secs:.0f}s runtime</span>
@@ -212,7 +206,7 @@ def render_email_html(
     home/away split (+5%), rest days (+4%), pace factor (+4%).
     NBA data sourced from stats.nba.com (via nba_api).
     NHL data sourced from api-web.nhle.com. MLB data sourced from statsapi.mlb.com.
-    Prop lines from The Odds API (DraftKings/FanDuel/BetMGM).
+    Prop lines sourced exclusively from PrizePicks.
     H2H reflects current-season matchups only (zeroed if fewer than 2 games).
     </p>
     <p>Generated {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} &nbsp;|&nbsp;
@@ -232,14 +226,11 @@ def _conf_class(prob: float) -> str:
     return "low"
 
 
-def _render_direction_table(picks: list, label: str, header_color: str) -> str:
+def _render_picks_table(picks: list) -> str:
     if not picks:
         return ""
     rows = "\n".join(_render_row(r) for r in picks)
     return f"""
-  <div style="padding:8px 20px 4px;background:{header_color};color:#fff;font-size:12px;font-weight:bold">
-    {label} &mdash; {len(picks)} Picks
-  </div>
   <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
     <thead>
       <tr>
@@ -296,25 +287,16 @@ def render_plain_text(results_by_sport: dict[str, list[PropResult]], run_date: d
     for sport_name, sport_results in results_by_sport.items():
         if not sport_results:
             continue
-        overs  = [r for r in sport_results if r.direction == "OVER"]
-        unders = [r for r in sport_results if r.direction == "UNDER"]
-        lines.append(f"── {sport_name} — TOP OVERS ──")
-        for r in overs:
+        lines.append(f"── {sport_name} — TOP 10 PICKS ──")
+        for r in sport_results[:10]:
+            dir_label = "OVER " if r.direction == "OVER" else "UNDER"
             lines.append(
                 f"{r.rank:>3}. {r.player_name:<22} "
-                f"{r.stat_type:<14} Line:{r.line:<6} "
-                f"Prob:{r.hit_probability:.0f}%  "
-                f"Pred:{r.predicted_value:.1f}"
-            )
-        lines.append(f"── {sport_name} — TOP UNDERS ──")
-        for r in unders:
-            lines.append(
-                f"{r.rank:>3}. {r.player_name:<22} "
-                f"{r.stat_type:<14} Line:{r.line:<6} "
+                f"{dir_label} {r.stat_type:<14} Line:{r.line:<6} "
                 f"Prob:{r.hit_probability:.0f}%  "
                 f"Pred:{r.predicted_value:.1f}"
             )
         lines.append("")
-    lines += ["Data: stats.nba.com + nhle.com + mlb.com + The Odds API",
+    lines += ["Data: stats.nba.com + nhle.com + mlb.com | Lines: PrizePicks",
               "Not financial advice."]
     return "\n".join(lines)

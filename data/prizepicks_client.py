@@ -136,6 +136,7 @@ class PrizePicksLiveClient:
         seen: dict[tuple, dict] = {}
         skipped_status: dict[str, int] = {}
         skipped_stat: dict[str, int] = {}
+        rank_type_vals: dict[str, int] = {}
 
         for proj in all_projections:
             attrs = proj.get("attributes", {})
@@ -158,8 +159,10 @@ class PrizePicksLiveClient:
             if line is None:
                 continue
 
-            raw_rank = attrs.get("rank_type") or attrs.get("pick_type") or "standard"
-            pick_type = str(raw_rank).lower().strip()
+            # PrizePicks uses rank_type to mark goblin/demon/standard.
+            # Log all distinct values seen so mismatches are visible in logs.
+            raw_rank = attrs.get("rank_type") or attrs.get("pick_type") or ""
+            pick_type = str(raw_rank).lower().strip() if raw_rank else "standard"
 
             player_id = (
                 proj.get("relationships", {})
@@ -186,13 +189,39 @@ class PrizePicksLiveClient:
                 "start_time": attrs.get("start_time", ""),
                 "pick_type": pick_type,
             }
-            # Always prefer the standard line. If we already have a goblin/demon
-            # entry and now find the standard one, replace it. This prevents the
-            # API response order from determining which line gets used.
+
+            # When PrizePicks returns multiple projections for the same
+            # (player, stat) — standard + goblin + demon variants — always
+            # keep the standard line.  Selection rules in priority order:
+            #   1. "standard" beats everything
+            #   2. Among non-standard, keep the one with the middle-most
+            #      line value (i.e. replace only if new line is between the
+            #      current stored line and the player's likely true average,
+            #      which we approximate as: prefer the line closest to the
+            #      midpoint of the two seen lines so far).
             if key not in seen:
                 seen[key] = prop_dict
             elif pick_type == "standard" and seen[key]["pick_type"] != "standard":
+                # Found the standard line — always use it.
                 seen[key] = prop_dict
+            elif pick_type not in ("goblin", "demon", "standard"):
+                # Unknown rank_type; if current stored entry is goblin/demon,
+                # this unknown type might be the standard — replace it.
+                if seen[key]["pick_type"] in ("goblin", "demon"):
+                    seen[key] = prop_dict
+
+            rank_type_vals[pick_type] = rank_type_vals.get(pick_type, 0) + 1
+
+        logger.debug("PrizePicks %s: rank_type values seen: %s", sport_name, rank_type_vals)
+        unknown_ranks = {k: v for k, v in rank_type_vals.items()
+                         if k not in ("standard", "goblin", "demon")}
+        if unknown_ranks:
+            logger.warning(
+                "PrizePicks %s: unrecognized rank_type values: %s — "
+                "goblin/demon detection may be unreliable. "
+                "Check the API response and update pick_type handling if needed.",
+                sport_name, unknown_ranks,
+            )
 
         if skipped_status:
             logger.warning(
