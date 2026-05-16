@@ -222,6 +222,7 @@ class PropAnalyzer:
             _std = consistency["std_dev"]
             _avg = avgs["season_avg"]
             if _std > 0 and _avg > 0:
+                # Primary heuristic: line is more than N std-devs from the mean.
                 if line < _avg - GOBLIN_STD_THRESHOLD * _std:
                     is_goblin = True
                     logger.debug(
@@ -233,6 +234,21 @@ class PropAnalyzer:
                     logger.debug(
                         "Demon heuristic: %s %s line=%.1f avg=%.1f std=%.1f",
                         player_name, stat_type, line, _avg, _std,
+                    )
+            elif _avg > 0:
+                # Fallback when std_dev is 0 (fewer than 5 games logged).
+                # Use ratio comparison: line > 2x avg → demon; line < 0.4x avg → goblin.
+                if line > _avg * 2.0:
+                    is_demon = True
+                    logger.debug(
+                        "Demon ratio fallback: %s %s line=%.1f avg=%.1f",
+                        player_name, stat_type, line, _avg,
+                    )
+                elif line < _avg * 0.4:
+                    is_goblin = True
+                    logger.debug(
+                        "Goblin ratio fallback: %s %s line=%.1f avg=%.1f",
+                        player_name, stat_type, line, _avg,
                     )
 
         delta_consistency = self._scorer.score_consistency(

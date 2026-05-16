@@ -134,6 +134,7 @@ class PrizePicksLiveClient:
             )
 
         seen: dict[tuple, dict] = {}
+        candidates: dict[tuple, list[dict]] = {}
         skipped_status: dict[str, int] = {}
         skipped_stat: dict[str, int] = {}
         rank_type_vals: dict[str, int] = {}
@@ -160,7 +161,8 @@ class PrizePicksLiveClient:
                 continue
 
             # PrizePicks uses rank_type to mark goblin/demon/standard.
-            # Log all distinct values seen so mismatches are visible in logs.
+            # In practice rank_type is often null for all three variants,
+            # so we cannot rely on it alone. Log distinct values for diagnostics.
             raw_rank = attrs.get("rank_type") or attrs.get("pick_type") or ""
             pick_type = str(raw_rank).lower().strip() if raw_rank else "standard"
 
@@ -190,27 +192,39 @@ class PrizePicksLiveClient:
                 "pick_type": pick_type,
             }
 
-            # When PrizePicks returns multiple projections for the same
-            # (player, stat) — standard + goblin + demon variants — always
-            # keep the standard line.  Selection rules in priority order:
-            #   1. "standard" beats everything
-            #   2. Among non-standard, keep the one with the middle-most
-            #      line value (i.e. replace only if new line is between the
-            #      current stored line and the player's likely true average,
-            #      which we approximate as: prefer the line closest to the
-            #      midpoint of the two seen lines so far).
-            if key not in seen:
-                seen[key] = prop_dict
-            elif pick_type == "standard" and seen[key]["pick_type"] != "standard":
-                # Found the standard line — always use it.
-                seen[key] = prop_dict
-            elif pick_type not in ("goblin", "demon", "standard"):
-                # Unknown rank_type; if current stored entry is goblin/demon,
-                # this unknown type might be the standard — replace it.
-                if seen[key]["pick_type"] in ("goblin", "demon"):
-                    seen[key] = prop_dict
-
+            candidates.setdefault(key, []).append(prop_dict)
             rank_type_vals[pick_type] = rank_type_vals.get(pick_type, 0) + 1
+
+        # Select the standard projection for each (player, stat).
+        # PrizePicks returns up to three variants per prop (goblin, standard, demon).
+        # Since rank_type is often null for all of them, we use line-value ordering:
+        #   - 1 projection  → use it as-is.
+        #   - 3+ projections → sort by line; the middle value is always the standard.
+        #   - 2 projections → use the lower line.  When paired as standard+demon the
+        #     lower IS the standard.  When paired as goblin+standard the lower is the
+        #     goblin, which the std-dev / ratio heuristic in prop_analyzer will catch.
+        for key, projs in candidates.items():
+            if len(projs) == 1:
+                chosen = projs[0]
+            else:
+                # Try explicit rank_type first — only trust it when at least one
+                # projection is uniquely labeled "standard".
+                standards = [p for p in projs if p["pick_type"] == "standard"]
+                others    = [p for p in projs if p["pick_type"] != "standard"]
+                if len(standards) == 1 and others:
+                    chosen = standards[0]
+                else:
+                    # rank_type unreliable — use positional median by line value.
+                    sorted_projs = sorted(projs, key=lambda p: p["line"])
+                    # For 2: index 0 (lower); for 3: index 1 (middle); for 4+: lower-middle.
+                    mid_idx = (len(sorted_projs) - 1) // 2
+                    chosen = sorted_projs[mid_idx]
+                    logger.debug(
+                        "PrizePicks %s: %d lines for %s %s %s → selected %.1f",
+                        sport_name, len(projs), key[0], key[1],
+                        [p["line"] for p in sorted_projs], chosen["line"],
+                    )
+            seen[key] = chosen
 
         logger.debug("PrizePicks %s: rank_type values seen: %s", sport_name, rank_type_vals)
         unknown_ranks = {k: v for k, v in rank_type_vals.items()
