@@ -218,29 +218,63 @@ class NHLStatsClient(BaseStatsClient):
             return []
 
         rows = []
+        _sample_logged = False
         for g in data.get("gameLog", []):
+            # Log all fields from the first game entry so we can identify any
+            # faceoff count fields or goalie decision fields in the raw API response.
+            if not _sample_logged:
+                logger.debug(
+                    "NHL game log raw fields (player %d, type=%d): %s",
+                    player_id, game_type, sorted(g.keys()),
+                )
+                logger.debug(
+                    "NHL game log sample entry: %s",
+                    {k: v for k, v in g.items()
+                     if any(x in k.lower() for x in
+                            ("face", "fow", "foa", "decision", "shutout", "save",
+                             "goal", "shot", "pctg", "win", "loss"))},
+                )
+                _sample_logged = True
+
             team_abbr = g.get("teamAbbrev", "")
             opp_abbr = g.get("opponentAbbrev", "")
             is_home = g.get("homeRoadFlag", "R") == "H"
             vs_str = "vs." if is_home else "@"
+
+            # Faceoffs: game log only provides faceoffWinningPctg (a 0.0-1.0 float).
+            # Try both the percentage field and any raw-count fields the API may add.
+            fo_pctg = float(g.get("faceoffWinningPctg") or 0.0)
+            fow_raw = g.get("faceoffsWon") or g.get("faceoffWins") or g.get("fow")
+            foa_raw = g.get("faceoffsTaken") or g.get("faceoffsAttempted") or g.get("foa")
+
+            # Goalie-specific fields (absent/null for skaters)
+            decision = str(g.get("decision") or "").upper().strip()  # "W", "L", "OT", or ""
+
             rows.append({
                 "GAME_DATE": g.get("gameDate", ""),
+                "GAME_ID":   str(g.get("gameId", "")),
                 "MATCHUP": f"{team_abbr} {vs_str} {opp_abbr}",
                 "location": "Home" if is_home else "Away",
                 "opponent_abbr": opp_abbr,
                 # Skater stats
-                "G":        float(g.get("goals", 0)),
-                "A":        float(g.get("assists", 0)),
-                "PTS":      float(g.get("points", 0)),
-                "SOG":      float(g.get("shots", 0)),
-                "PPP":      float(g.get("powerPlayPoints", 0)),
-                "HITS":     float(g.get("hits", 0)),
-                "BLKS":     float(g.get("blockedShots", 0)),
+                "G":         float(g.get("goals", 0)),
+                "A":         float(g.get("assists", 0)),
+                "PTS":       float(g.get("points", 0)),
+                "SOG":       float(g.get("shots", 0)),
+                "PPP":       float(g.get("powerPlayPoints", 0)),
+                "HITS":      float(g.get("hits", 0)),
+                "BLKS":      float(g.get("blockedShots", 0)),
                 "PLUSMINUS": float(g.get("plusMinus", 0)),
-                "TOI":      _toi_to_minutes(g.get("toi", "0:00")),
+                "TOI":       _toi_to_minutes(g.get("toi", "0:00")),
+                # Faceoff data: raw counts when available, else 0 (populated later
+                # via boxscore enrichment or estimation)
+                "FO_PCTG":   fo_pctg,
+                "FOW":       float(fow_raw) if fow_raw is not None else 0.0,
+                "FOA":       float(foa_raw) if foa_raw is not None else 0.0,
                 # Goalie stats (zero for skaters; populated for goalies)
-                "SAVES":    float(g.get("saves", 0)),
-                "GA":       float(g.get("goalsAgainst", 0)),
+                "SAVES":     float(g.get("saves", 0)),
+                "GA":        float(g.get("goalsAgainst", 0)),
+                "DECISION":  decision,   # "W", "L", "OT", or "" for skaters
             })
         return rows
 
