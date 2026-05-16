@@ -98,9 +98,8 @@ class PrizePicksLiveClient:
                 break
 
         logger.warning(
-            "PrizePicks API unavailable for %s (all %d header variants returned 403 or error). "
-            "PrizePicks may have added bot protection. "
-            "Use THE_ODDS_API_KEY in .env or fill props.json manually.",
+            "PrizePicks API unavailable for %s — all %d header variants returned 403 or error. "
+            "PrizePicks may have added bot protection. Fill props.json manually and re-run.",
             sport_name, len(_PP_HEADER_VARIANTS),
         )
         return []
@@ -124,14 +123,27 @@ class PrizePicksLiveClient:
                     "position": attrs.get("position", ""),
                 }
 
+        all_projections = [p for p in data.get("data", []) if p.get("type") == "projection"]
+        logger.debug("PrizePicks %s: %d raw projections received", sport_name, len(all_projections))
+
+        if not all_projections:
+            logger.warning(
+                "PrizePicks returned 0 %s projections — the league_id (%s) may be incorrect "
+                "or PrizePicks has not yet posted lines for today's games.",
+                sport_name, sport_config.get("prizepicks_league_id"),
+            )
+
         seen: dict[tuple, dict] = {}
-        for proj in data.get("data", []):
-            if proj.get("type") != "projection":
-                continue
+        skipped_status: dict[str, int] = {}
+        skipped_stat: dict[str, int] = {}
+
+        for proj in all_projections:
             attrs = proj.get("attributes", {})
 
             # Only include lines not yet started
-            if attrs.get("status") not in ("pre_game", "pregame", None, ""):
+            status = attrs.get("status")
+            if status not in ("pre_game", "pregame", None, ""):
+                skipped_status[status] = skipped_status.get(status, 0) + 1
                 continue
 
             raw_stat = attrs.get("stat_type", "")
@@ -139,6 +151,7 @@ class PrizePicksLiveClient:
             stat_type = pp_stat_map.get(raw_stat, raw_stat)
             # None value in map means explicitly unsupported — skip
             if stat_type is None or stat_type not in prop_stat_map:
+                skipped_stat[raw_stat] = skipped_stat.get(raw_stat, 0) + 1
                 continue
 
             line = attrs.get("line_score")
@@ -180,6 +193,24 @@ class PrizePicksLiveClient:
                 seen[key] = prop_dict
             elif pick_type == "standard" and seen[key]["pick_type"] != "standard":
                 seen[key] = prop_dict
+
+        if skipped_status:
+            logger.warning(
+                "PrizePicks %s: %d projection(s) skipped — unexpected status values: %s. "
+                "These props exist but were filtered out because their game has already started "
+                "or PrizePicks is using a new status label.",
+                sport_name,
+                sum(skipped_status.values()),
+                dict(skipped_status),
+            )
+        if skipped_stat:
+            logger.warning(
+                "PrizePicks %s: %d projection(s) skipped — unrecognized stat types: %s. "
+                "Add these to prizepicks_stat_map or prop_stat_map in config.py to include them.",
+                sport_name,
+                sum(skipped_stat.values()),
+                dict(skipped_stat),
+            )
 
         return list(seen.values())
 
