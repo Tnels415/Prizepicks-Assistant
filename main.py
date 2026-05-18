@@ -273,9 +273,60 @@ def main() -> int:
 
     yest_html = render_yesterday_section(yesterday_results, cumulative_stats, yesterday)
     html_body = render_email_html(results_by_sport, today, duration, yesterday_section_html=yest_html)
-    plain_body = render_plain_text(results_by_sport, today)
+    plain_body = render_plain_text(
+        results_by_sport, today,
+        yesterday_results=yesterday_results,
+        cumulative_stats=cumulative_stats,
+        yesterday_date=yesterday,
+    )
 
     send(subject, html_body, plain_body)
+
+    # --- Yesterday's results to stdout --------------------------------------
+    yest_evaluated = [r for r in yesterday_results if r.get("correct") in (0, 1)]
+    if yest_evaluated:
+        n_correct = sum(1 for r in yest_evaluated if r["correct"] == 1)
+        n_total   = len(yest_evaluated)
+        pct_corr  = round(n_correct / n_total * 100) if n_total else 0
+        pct_wrong = 100 - pct_corr
+        cum_total   = cumulative_stats.get("total_evaluated", 0)
+        cum_correct = cumulative_stats.get("total_correct", 0)
+        cum_pct     = cumulative_stats.get("accuracy_pct", 0.0)
+
+        print("\n" + "=" * 60)
+        print(f"YESTERDAY'S RESULTS — {yesterday.strftime('%B %d, %Y')}")
+        print("=" * 60)
+        print(
+            f"  {n_correct}/{n_total} correct  "
+            f"({pct_corr}% correct | {pct_wrong}% incorrect)"
+        )
+        if cum_total:
+            print(f"  All-time: {cum_correct}/{cum_total} ({cum_pct}%)")
+        print()
+
+        correct_picks   = [r for r in yest_evaluated if r["correct"] == 1]
+        incorrect_picks = [r for r in yest_evaluated if r["correct"] == 0]
+
+        def _fmt_result(r: dict) -> str:
+            actual = r.get("actual_value")
+            actual_str = f"{actual:.1f}" if actual is not None else "?"
+            dir_label = "OVER " if r.get("direction") == "OVER" else "UNDER"
+            return (
+                f"    {r.get('player_name',''):<22} "
+                f"{dir_label} {r.get('stat_type',''):<14} "
+                f"Line:{r.get('line','')!s:<6}  Actual:{actual_str}  "
+                f"({r.get('hit_probability', 0):.0f}%)"
+            )
+
+        if correct_picks:
+            print(f"  CORRECT ({pct_corr}%):")
+            for r in correct_picks:
+                print(f"  ✓{_fmt_result(r)}")
+            print()
+        if incorrect_picks:
+            print(f"  INCORRECT ({pct_wrong}%):")
+            for r in incorrect_picks:
+                print(f"  ✗{_fmt_result(r)}")
 
     # --- Summary to stdout --------------------------------------------------
     print("\n" + "=" * 60)

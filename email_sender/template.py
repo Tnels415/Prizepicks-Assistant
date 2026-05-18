@@ -278,12 +278,64 @@ def _render_row(r: PropResult) -> str:
       </tr>"""
 
 
-def render_plain_text(results_by_sport: dict[str, list[PropResult]], run_date: date) -> str:
+def render_plain_text(
+    results_by_sport: dict[str, list[PropResult]],
+    run_date: date,
+    yesterday_results: list | None = None,
+    cumulative_stats: dict | None = None,
+    yesterday_date: date | None = None,
+) -> str:
     lines = [
         f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
         "=" * 70,
         "",
     ]
+
+    # Yesterday's results section
+    if yesterday_results:
+        evaluated = [r for r in yesterday_results if r.get("correct") in (0, 1)]
+        if evaluated:
+            n_correct = sum(1 for r in evaluated if r["correct"] == 1)
+            n_total   = len(evaluated)
+            pct_corr  = round(n_correct / n_total * 100) if n_total else 0
+            pct_wrong = 100 - pct_corr
+            date_label = yesterday_date.strftime("%B %d, %Y") if yesterday_date else "Yesterday"
+
+            cum = cumulative_stats or {}
+            cum_total   = cum.get("total_evaluated", 0)
+            cum_correct = cum.get("total_correct", 0)
+            cum_pct     = cum.get("accuracy_pct", 0.0)
+
+            lines += [
+                f"── YESTERDAY'S RESULTS — {date_label} ──",
+                f"  {n_correct}/{n_total} correct ({pct_corr}% correct | {pct_wrong}% incorrect)"
+                + (f"  |  All-time: {cum_correct}/{cum_total} ({cum_pct}%)" if cum_total else ""),
+                "",
+            ]
+
+            correct_picks   = [r for r in evaluated if r["correct"] == 1]
+            incorrect_picks = [r for r in evaluated if r["correct"] == 0]
+
+            def _pick_line(r: dict) -> str:
+                actual = r.get("actual_value")
+                actual_str = f"{actual:.1f}" if actual is not None else "?"
+                return (
+                    f"    {r.get('player_name',''):<22} "
+                    f"{'OVER ' if r.get('direction')=='OVER' else 'UNDER'} "
+                    f"{r.get('stat_type',''):<14} "
+                    f"Line:{r.get('line','')!s:<6}  Actual:{actual_str}  "
+                    f"({r.get('hit_probability', 0):.0f}%)"
+                )
+
+            if correct_picks:
+                lines.append(f"  CORRECT ({pct_corr}%):")
+                lines += [_pick_line(r) for r in correct_picks]
+                lines.append("")
+            if incorrect_picks:
+                lines.append(f"  INCORRECT ({pct_wrong}%):")
+                lines += [_pick_line(r) for r in incorrect_picks]
+                lines.append("")
+
     for sport_name, sport_results in results_by_sport.items():
         if not sport_results:
             continue

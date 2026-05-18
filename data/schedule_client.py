@@ -73,6 +73,8 @@ class ScheduleClient:
         games = self._try_nba_live_scoreboard()
         if not games:
             games = self._try_nba_stats_scoreboard()
+        if not games:
+            games = self._try_espn_nba_scoreboard()
         logger.info("Found %d NBA games today", len(games))
         return games
 
@@ -109,6 +111,65 @@ class ScheduleClient:
         except Exception as exc:
             logger.warning("NBA stats scoreboard failed: %s", exc)
             return []
+
+    # ESPN uses slightly different abbreviations for some NBA teams.
+    # Normalize them to the NBA-standard abbreviations used by _TEAM_ABBR_TO_ID.
+    _ESPN_NBA_ABBR_MAP: dict[str, str] = {
+        "GS": "GSW",   # Golden State Warriors
+        "SA": "SAS",   # San Antonio Spurs
+        "NY": "NYK",   # New York Knicks
+        "NO": "NOP",   # New Orleans Pelicans
+        "UTAH": "UTA", # Utah Jazz
+        "WSH": "WAS",  # Washington Wizards
+    }
+
+    def _try_espn_nba_scoreboard(self) -> list[dict]:
+        """ESPN unofficial scoreboard — used as a fallback when stats.nba.com is unavailable."""
+        try:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("ESPN NBA scoreboard failed: %s", exc)
+            return []
+
+        games = []
+        for event in data.get("events", []):
+            for comp in event.get("competitions", [{}]):
+                competitors = comp.get("competitors", [])
+                home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+                away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+                home_team = home.get("team", {})
+                away_team = away.get("team", {})
+                if not home_team or not away_team:
+                    continue
+                home_abbr = self._ESPN_NBA_ABBR_MAP.get(
+                    home_team.get("abbreviation", ""),
+                    home_team.get("abbreviation", ""),
+                )
+                away_abbr = self._ESPN_NBA_ABBR_MAP.get(
+                    away_team.get("abbreviation", ""),
+                    away_team.get("abbreviation", ""),
+                )
+                # Map abbreviations to NBA team IDs so team-stats lookups work correctly.
+                home_id = _TEAM_ABBR_TO_ID.get(home_abbr, 0)
+                away_id = _TEAM_ABBR_TO_ID.get(away_abbr, 0)
+                games.append({
+                    "game_id": str(event.get("id", "")),
+                    "home_team_id": home_id,
+                    "home_team_abbr": home_abbr,
+                    "away_team_id": away_id,
+                    "away_team_abbr": away_abbr,
+                    "game_status": str(
+                        event.get("status", {}).get("type", {}).get("name", "")
+                    ),
+                })
+
+        logger.info("ESPN NBA fallback: found %d games", len(games))
+        return games
 
     def _parse_nba_live_game(self, game: dict) -> dict | None:
         try:
