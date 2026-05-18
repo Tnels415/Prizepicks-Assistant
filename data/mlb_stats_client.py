@@ -270,6 +270,7 @@ class MLBStatsClient(BaseStatsClient):
 
     def get_game_stats_for_date(self, player_id: int, game_date: date) -> dict | None:
         try:
+            _GAME_LOG_CACHE.invalidate("MLB", player_id)
             df = self.get_player_game_log(player_id)
             if df.empty or "GAME_DATE" not in df.columns:
                 return {"played": False}

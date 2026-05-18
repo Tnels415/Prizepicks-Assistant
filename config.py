@@ -69,17 +69,16 @@ BALLDONTLIE_BASE_URL = "https://api.balldontlie.io/v1"
 
 # ── NBA legacy constants (still used by existing code) ──────────────────────
 PROP_STAT_MAP = {
-    "Points": "PTS",
-    "Rebounds": "REB",
-    "Assists": "AST",
-    "3-PT Made": "FG3M",
-    "Steals": "STL",
-    "Blocks": "BLK",
+    "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+    "3-PT Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
     "Turnovers": "TOV",
-    "Pts+Reb+Ast": None,
-    "Pts+Ast": None,
-    "Pts+Reb": None,
-    "Reb+Ast": None,
+    "FG Made": "FGM", "FG Attempted": "FGA",
+    "3-PT Attempted": "FG3A",
+    "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
+    "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
+    "Personal Fouls": "PF",
+    "Pts+Reb+Ast": None, "Pts+Ast": None, "Pts+Reb": None, "Reb+Ast": None,
+    "Blks+Stls": None,
 }
 
 COMBO_STAT_MAP = {
@@ -87,6 +86,7 @@ COMBO_STAT_MAP = {
     "Pts+Ast": ["PTS", "AST"],
     "Pts+Reb": ["PTS", "REB"],
     "Reb+Ast": ["REB", "AST"],
+    "Blks+Stls": ["BLK", "STL"],
 }
 
 OPPONENT_STAT_COL = {
@@ -213,14 +213,24 @@ SPORT_CONFIG: dict[str, dict] = {
         "prop_stat_map": {
             "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
             "3-PT Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
-            "Turnovers": "TOV", "Pts+Reb+Ast": None, "Pts+Ast": None,
-            "Pts+Reb": None, "Reb+Ast": None,
+            "Turnovers": "TOV",
+            "FG Made": "FGM", "FG Attempted": "FGA",
+            "3-PT Attempted": "FG3A",
+            "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
+            "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
+            "Personal Fouls": "PF",
+            # Combo stats — handled via combo_stat_map
+            "Pts+Reb+Ast": None, "Pts+Ast": None, "Pts+Reb": None, "Reb+Ast": None,
+            "Blks+Stls": None,
+            # Unsupported — skip
+            "Fantasy Score": None, "Dunks": None, "Double-Double": None,
         },
         "combo_stat_map": {
             "Pts+Reb+Ast": ["PTS", "REB", "AST"],
             "Pts+Ast": ["PTS", "AST"],
             "Pts+Reb": ["PTS", "REB"],
             "Reb+Ast": ["REB", "AST"],
+            "Blks+Stls": ["BLK", "STL"],
         },
         "opponent_stat_col": {
             "Points": "OPP_PTS", "Rebounds": "OPP_REB", "Assists": "OPP_AST",
@@ -232,14 +242,23 @@ SPORT_CONFIG: dict[str, dict] = {
             "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
             "3-PT Made": "FG3M", "Steals": "STL", "Blocks": "BLK",
             "Turnovers": "TOV",
+            "FG Made": "FGM", "FG Attempted": "FGA",
+            "3-PT Attempted": "FG3A",
+            "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
+            "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
+            "Personal Fouls": "PF",
             "Pts+Reb+Ast": ["PTS", "REB", "AST"],
             "Pts+Ast": ["PTS", "AST"],
             "Pts+Reb": ["PTS", "REB"],
             "Reb+Ast": ["REB", "AST"],
+            "Blks+Stls": ["BLK", "STL"],
         },
         "counting_stats": {
             "Points", "Rebounds", "Assists", "3-PT Made",
-            "Pts+Reb+Ast", "Pts+Ast", "Pts+Reb", "Reb+Ast",
+            "FG Made", "FG Attempted", "3-PT Attempted",
+            "Free Throws Made", "Free Throws Attempted",
+            "Defensive Rebounds", "Offensive Rebounds",
+            "Pts+Reb+Ast", "Pts+Ast", "Pts+Reb", "Reb+Ast", "Blks+Stls",
         },
         "team_name_to_abbr": NBA_TEAM_NAME_TO_ABBR,
         "stats_client_class": "NBAStatsClient",
@@ -251,6 +270,30 @@ SPORT_CONFIG: dict[str, dict] = {
             "Pts+Asts": "Pts+Ast",
             "Pts+Rebs": "Pts+Reb",
             "Rebs+Asts": "Reb+Ast",
+            # Flex/"(Combo)" props — map to their standard equivalents
+            "Points (Combo)": "Points",
+            "Rebounds (Combo)": "Rebounds",
+            "Assists (Combo)": "Assists",
+            "3-PT Made (Combo)": "3-PT Made",
+            "Steals (Combo)": "Steals",
+            "Blocks (Combo)": "Blocks",
+            "Turnovers (Combo)": "Turnovers",
+            "FG Made (Combo)": "FG Made",
+            "FG Attempted (Combo)": "FG Attempted",
+            "Free Throws Made (Combo)": "Free Throws Made",
+            "Free Throws Attempted (Combo)": "Free Throws Attempted",
+            "Defensive Rebounds (Combo)": "Defensive Rebounds",
+            "Offensive Rebounds (Combo)": "Offensive Rebounds",
+            "Personal Fouls (Combo)": "Personal Fouls",
+            # Alternate PrizePicks labels observed in the wild
+            "Steals+Blocks": "Blks+Stls",
+            "Blocks+Steals": "Blks+Stls",
+            # Explicit skips — no clean data source
+            "Fantasy Score": None,
+            "Dunks": None,
+            "Double-Double": None,
+            "Points+Rebounds+Assists - 1st 3 Minutes": None,
+            "Points - 1st 3 Minutes": None,
         },
         "dk_event_group_id": 42648,
     },

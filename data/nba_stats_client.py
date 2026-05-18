@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import json
+from datetime import date
 
 import pandas as pd
 import requests
@@ -56,16 +57,27 @@ _ESPN_GAMELOG_URL = "https://site.api.espn.com/apis/common/v3/sports/basketball/
 
 # Maps ESPN gamelog label strings to our internal DataFrame column names.
 _ESPN_LABEL_MAP: dict[str, str] = {
-    "PTS": "PTS",
-    "REB": "REB",
-    "AST": "AST",
-    "STL": "STL",
-    "BLK": "BLK",
-    "TO":  "TOV",
-    "TOV": "TOV",
-    "3PM": "FG3M",
+    "PTS":  "PTS",
+    "REB":  "REB",
+    "AST":  "AST",
+    "STL":  "STL",
+    "BLK":  "BLK",
+    "TO":   "TOV",
+    "TOV":  "TOV",
+    "3PM":  "FG3M",
     "3FGM": "FG3M",
-    "MIN": "MIN",
+    "MIN":  "MIN",
+    "FGM":  "FGM",
+    "FGA":  "FGA",
+    "3PA":  "FG3A",
+    "3FGA": "FG3A",
+    "FTM":  "FTM",
+    "FTA":  "FTA",
+    "DREB": "DREB",
+    "OREB": "OREB",
+    "PF":   "PF",
+    "+/-":  "PLUS_MINUS",
+    "PM":   "PLUS_MINUS",
 }
 
 
@@ -239,18 +251,26 @@ class NBAStatsClient:
                 location = "Home" if team_id == home_id else "Away"
                 matchup = r.get("team", {}).get("abbreviation", "")
                 rows.append({
-                    "GAME_DATE": pd.to_datetime(r.get("date", "")),
-                    "MATCHUP": matchup,
-                    "location": location,
+                    "GAME_DATE":    pd.to_datetime(r.get("date", "")),
+                    "MATCHUP":      matchup,
+                    "location":     location,
                     "opponent_abbr": "",
-                    "MIN": r.get("min", "0"),
-                    "PTS": r.get("pts", 0),
-                    "REB": r.get("reb", 0),
-                    "AST": r.get("ast", 0),
-                    "FG3M": r.get("fg3m", 0),
-                    "STL": r.get("stl", 0),
-                    "BLK": r.get("blk", 0),
-                    "TOV": r.get("turnover", 0),
+                    "MIN":          r.get("min", "0"),
+                    "PTS":          r.get("pts", 0),
+                    "REB":          r.get("reb", 0),
+                    "AST":          r.get("ast", 0),
+                    "FGM":          r.get("fgm", 0),
+                    "FGA":          r.get("fga", 0),
+                    "FG3M":         r.get("fg3m", 0),
+                    "FG3A":         r.get("fg3a", 0),
+                    "FTM":          r.get("ftm", 0),
+                    "FTA":          r.get("fta", 0),
+                    "OREB":         r.get("oreb", 0),
+                    "DREB":         r.get("dreb", 0),
+                    "STL":          r.get("stl", 0),
+                    "BLK":          r.get("blk", 0),
+                    "TOV":          r.get("turnover", 0),
+                    "PF":           r.get("pf", 0),
                 })
             df = pd.DataFrame(rows)
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
@@ -371,10 +391,19 @@ class NBAStatsClient:
                 "PTS":           _stat("PTS"),
                 "REB":           _stat("REB"),
                 "AST":           _stat("AST"),
+                "FGM":           _stat("FGM"),
+                "FGA":           _stat("FGA"),
                 "FG3M":          _stat("FG3M"),
+                "FG3A":          _stat("FG3A"),
+                "FTM":           _stat("FTM"),
+                "FTA":           _stat("FTA"),
+                "OREB":          _stat("OREB"),
+                "DREB":          _stat("DREB"),
                 "STL":           _stat("STL"),
                 "BLK":           _stat("BLK"),
                 "TOV":           _stat("TOV"),
+                "PF":            _stat("PF"),
+                "PLUS_MINUS":    _stat("PLUS_MINUS"),
             })
 
         if not rows:
@@ -518,6 +547,19 @@ class NBAStatsClient:
             logger.warning("Player usage fetch failed: %s", exc)
 
         return _PLAYER_USAGE_CACHE
+
+    # -------------------------------------------------------------------------
+    # Outcome evaluation helper
+    # -------------------------------------------------------------------------
+
+    def get_game_stats_for_date(self, player_id: int, game_date: date) -> dict | None:
+        # Bypass disk cache so outcome evaluation always uses completed-game data.
+        # The cache was populated before yesterday's games were played; without
+        # invalidation the fetcher would see stale data and return {"played": False}.
+        _GAME_LOG_CACHE.invalidate("NBA", player_id)
+        if player_id in _PLAYER_CACHE:
+            del _PLAYER_CACHE[player_id]
+        return super().get_game_stats_for_date(player_id, game_date)
 
     # -------------------------------------------------------------------------
     # nba_api retry wrapper

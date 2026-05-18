@@ -85,6 +85,15 @@ class GameLogCache:
             logger.debug("Stale cache read failed for %s player %d: %s", sport, player_id, exc)
             return None
 
+    def invalidate(self, sport: str, player_id: int) -> None:
+        """Remove a player's cache entry so the next get() fetches fresh data."""
+        path = self._path(sport, player_id)
+        try:
+            path.unlink(missing_ok=True)
+            logger.debug("Cache invalidated for %s player %d", sport, player_id)
+        except Exception as exc:
+            logger.debug("Cache invalidate failed for %s player %d: %s", sport, player_id, exc)
+
     def set(self, sport: str, player_id: int, df: pd.DataFrame) -> None:
         """Write *df* to disk as a CSV under cache/game_logs/{sport}/{player_id}.csv."""
         if df is None or df.empty:
