@@ -164,6 +164,7 @@ class NBAStatsClient:
 
         # 3. On success, persist to disk cache.
         if df is not None and not df.empty:
+            df = self._add_derived_columns(df)
             _GAME_LOG_CACHE.set("NBA", player_id, df)
         else:
             # 4. Both live sources failed — try stale cache (< 7 days old).
@@ -547,6 +548,22 @@ class NBAStatsClient:
             logger.warning("Player usage fetch failed: %s", exc)
 
         return _PLAYER_USAGE_CACHE
+
+    # -------------------------------------------------------------------------
+    # Derived column computation
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """Add two-pointer columns derived from field-goal and three-point columns."""
+        if "FGM" in df.columns and "FG3M" in df.columns:
+            df = df.copy()
+            df["2PM"] = (df["FGM"].astype(float) - df["FG3M"].astype(float)).clip(lower=0)
+        if "FGA" in df.columns and "FG3A" in df.columns:
+            if "2PM" not in df.columns:
+                df = df.copy()
+            df["2PA"] = (df["FGA"].astype(float) - df["FG3A"].astype(float)).clip(lower=0)
+        return df
 
     # -------------------------------------------------------------------------
     # Outcome evaluation helper

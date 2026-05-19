@@ -223,7 +223,8 @@ class PrizePicksLiveClient:
         seen: dict[tuple, dict] = {}
         candidates: dict[tuple, list[dict]] = {}
         skipped_status: dict[str, int] = {}
-        skipped_stat: dict[str, int] = {}
+        skipped_stat: dict[str, int] = {}       # truly unrecognized (not in prizepicks_stat_map)
+        explicitly_skipped: dict[str, int] = {} # mapped to None (intentionally unsupported)
         rank_type_vals: dict[str, int] = {}
         _sample_logged = 0   # log full attrs for first few projections to aid diagnostics
 
@@ -252,8 +253,12 @@ class PrizePicksLiveClient:
             raw_stat = attrs.get("stat_type", "")
             # Normalize PrizePicks naming to our internal stat names
             stat_type = pp_stat_map.get(raw_stat, raw_stat)
-            # None value in map means explicitly unsupported — skip
-            if stat_type is None or stat_type not in prop_stat_map:
+            # None value in map means explicitly unsupported — skip silently
+            if stat_type is None:
+                explicitly_skipped[raw_stat] = explicitly_skipped.get(raw_stat, 0) + 1
+                continue
+            # Internal stat name not found in prop_stat_map — truly unrecognized
+            if stat_type not in prop_stat_map:
                 skipped_stat[raw_stat] = skipped_stat.get(raw_stat, 0) + 1
                 continue
 
@@ -374,6 +379,13 @@ class PrizePicksLiveClient:
                 sport_name,
                 sum(skipped_status.values()),
                 dict(skipped_status),
+            )
+        if explicitly_skipped:
+            logger.debug(
+                "PrizePicks %s: %d projection(s) intentionally skipped (mapped to None): %s",
+                sport_name,
+                sum(explicitly_skipped.values()),
+                dict(explicitly_skipped),
             )
         if skipped_stat:
             logger.warning(

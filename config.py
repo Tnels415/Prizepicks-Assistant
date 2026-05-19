@@ -74,6 +74,7 @@ PROP_STAT_MAP = {
     "Turnovers": "TOV",
     "FG Made": "FGM", "FG Attempted": "FGA",
     "3-PT Attempted": "FG3A",
+    "Two Pointers Made": "2PM", "Two Pointers Attempted": "2PA",
     "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
     "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
     "Personal Fouls": "PF",
@@ -216,14 +217,13 @@ SPORT_CONFIG: dict[str, dict] = {
             "Turnovers": "TOV",
             "FG Made": "FGM", "FG Attempted": "FGA",
             "3-PT Attempted": "FG3A",
+            "Two Pointers Made": "2PM", "Two Pointers Attempted": "2PA",
             "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
             "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
             "Personal Fouls": "PF",
             # Combo stats — handled via combo_stat_map
             "Pts+Reb+Ast": None, "Pts+Ast": None, "Pts+Reb": None, "Reb+Ast": None,
             "Blks+Stls": None,
-            # Unsupported — skip
-            "Fantasy Score": None, "Dunks": None, "Double-Double": None,
         },
         "combo_stat_map": {
             "Pts+Reb+Ast": ["PTS", "REB", "AST"],
@@ -244,6 +244,7 @@ SPORT_CONFIG: dict[str, dict] = {
             "Turnovers": "TOV",
             "FG Made": "FGM", "FG Attempted": "FGA",
             "3-PT Attempted": "FG3A",
+            "Two Pointers Made": "2PM", "Two Pointers Attempted": "2PA",
             "Free Throws Made": "FTM", "Free Throws Attempted": "FTA",
             "Defensive Rebounds": "DREB", "Offensive Rebounds": "OREB",
             "Personal Fouls": "PF",
@@ -256,6 +257,7 @@ SPORT_CONFIG: dict[str, dict] = {
         "counting_stats": {
             "Points", "Rebounds", "Assists", "3-PT Made",
             "FG Made", "FG Attempted", "3-PT Attempted",
+            "Two Pointers Made", "Two Pointers Attempted",
             "Free Throws Made", "Free Throws Attempted",
             "Defensive Rebounds", "Offensive Rebounds",
             "Pts+Reb+Ast", "Pts+Ast", "Pts+Reb", "Reb+Ast", "Blks+Stls",
@@ -280,6 +282,8 @@ SPORT_CONFIG: dict[str, dict] = {
             "Turnovers (Combo)": "Turnovers",
             "FG Made (Combo)": "FG Made",
             "FG Attempted (Combo)": "FG Attempted",
+            "Two Pointers Made (Combo)": "Two Pointers Made",
+            "Two Pointers Attempted (Combo)": "Two Pointers Attempted",
             "Free Throws Made (Combo)": "Free Throws Made",
             "Free Throws Attempted (Combo)": "Free Throws Attempted",
             "Defensive Rebounds (Combo)": "Defensive Rebounds",
@@ -288,12 +292,16 @@ SPORT_CONFIG: dict[str, dict] = {
             # Alternate PrizePicks labels observed in the wild
             "Steals+Blocks": "Blks+Stls",
             "Blocks+Steals": "Blks+Stls",
-            # Explicit skips — no clean data source
+            # Explicit skips — unsupported stat types (logged at DEBUG, not WARNING)
             "Fantasy Score": None,
             "Dunks": None,
             "Double-Double": None,
-            "Points+Rebounds+Assists - 1st 3 Minutes": None,
             "Points - 1st 3 Minutes": None,
+            "Rebounds - 1st 3 Minutes": None,
+            "Assists - 1st 3 Minutes": None,
+            "Points+Rebounds+Assists - 1st 3 Minutes": None,
+            "Quarters with 3+ Points": None,
+            "Quarters with 5+ Points": None,
         },
         "dk_event_group_id": 42648,
     },
