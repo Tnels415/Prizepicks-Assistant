@@ -8,6 +8,7 @@ import pandas as pd
 
 from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
+from data.news_client import get_player_news_sentiment
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
 from config import SPORT_CONFIG, GOBLIN_STD_THRESHOLD
@@ -213,6 +214,12 @@ class PropAnalyzer:
         consistency = self._calc.calculate_consistency(game_log, stat_type, line)
         hit_rates   = self._calc.calculate_hit_rates_multi_window(game_log, stat_type, line)
 
+        # Analyst sentiment from ESPN news headlines (graceful degradation to 0)
+        try:
+            news_sentiment = get_player_news_sentiment(player_name, self._sport["name"])
+        except Exception:
+            news_sentiment = 0.0
+
         # Goblin/demon detection — API pick_type takes precedence; std-dev heuristic is fallback.
         # IMPORTANT: pick_type defaults to "unknown" (not "standard") when the API returns null,
         # so pick_type == "unknown" means we genuinely don't know the line type.
@@ -282,10 +289,12 @@ class PropAnalyzer:
         delta_trend_dir = self._scorer.score_trend_direction(
             avgs["last_5_avg"], avgs["last_10_avg"], avgs["season_avg"], line
         )
+        delta_sentiment = self._scorer.score_analyst_sentiment(news_sentiment)
 
         adjustments = [delta_season, delta_form, delta_h2h, delta_opp,
                        delta_loc, delta_rest, delta_pace,
-                       delta_consistency, delta_hit_trend, delta_trend_dir]
+                       delta_consistency, delta_hit_trend, delta_trend_dir,
+                       delta_sentiment]
 
         learned_weights = (
             self._corrections.factor_weights
@@ -329,6 +338,7 @@ class PropAnalyzer:
             "consistency": delta_consistency,
             "hit_rate_trend": delta_hit_trend,
             "trend_direction": delta_trend_dir,
+            "analyst_sentiment": delta_sentiment,
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)

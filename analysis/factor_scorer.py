@@ -181,6 +181,18 @@ class FactorScorer:
         signal = (0.6 * slope_recent + 0.4 * slope_overall) / line * 20.0
         return float(max(-4.0, min(4.0, signal)))
 
+    def score_analyst_sentiment(self, sentiment: float) -> float:
+        """±4pp based on ESPN news sentiment for the player.
+
+        sentiment is in [-1.0, 1.0]:
+          +1 = all recent headlines are positive (healthy, hot streak)
+          -1 = all recent headlines are negative (injury, struggling)
+           0 = neutral or no news found
+
+        Capped at ±4pp so news is a tie-breaker, not a dominant factor.
+        """
+        return float(max(-4.0, min(4.0, sentiment * 4.0)))
+
     # -------------------------------------------------------------------------
     # Composite probability
     # -------------------------------------------------------------------------

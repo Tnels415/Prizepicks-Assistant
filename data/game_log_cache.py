@@ -3,7 +3,7 @@ from __future__ import annotations
 """Disk-based game log cache.
 
 Stores one CSV file per player per sport under cache/game_logs/{sport}/{player_id}.csv.
-Cache entries are valid for 24 hours; stale entries (>24h but <7 days) can be
+Cache entries are valid for 6 hours; stale entries (>6h but <7 days) can be
 retrieved explicitly for fallback purposes.
 """
 
@@ -16,7 +16,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_CACHE_TTL_SECONDS = 24 * 3600        # 24 hours — normal TTL
+_CACHE_TTL_SECONDS = 6 * 3600         # 6 hours — ensures morning run always fetches fresh data
 _CACHE_STALE_SECONDS = 7 * 24 * 3600  # 7 days  — stale-but-usable TTL
 _CACHE_ROOT = Path("cache/game_logs")
 

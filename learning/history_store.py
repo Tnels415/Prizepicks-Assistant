@@ -21,10 +21,12 @@ FACTOR_NAMES = [
     "home_away",
     "rest_days",
     "pace",
-    # Per-player historical signal factors (added for richer individual analysis)
+    # Per-player historical signal factors
     "consistency",
     "hit_rate_trend",
     "trend_direction",
+    # External analyst sentiment (ESPN news keyword analysis)
+    "analyst_sentiment",
 ]
 
 _DDL = """

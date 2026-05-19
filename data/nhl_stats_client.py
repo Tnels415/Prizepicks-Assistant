@@ -215,7 +215,7 @@ class NHLStatsClient(BaseStatsClient):
         if player_id in self._game_log_cache:
             return self._game_log_cache[player_id]
 
-        # 1. Check disk cache first (valid for 24 hours).
+        # 1. Check disk cache (valid for 6 hours — see game_log_cache.py TTL).
         cached = _GAME_LOG_CACHE.get("NHL", player_id)
         if cached is not None:
             logger.debug("NHL game log for player %d served from disk cache", player_id)
@@ -314,6 +314,19 @@ class NHLStatsClient(BaseStatsClient):
             # Goalie-specific fields (absent/null for skaters)
             decision = str(g.get("decision") or "").upper().strip()  # "W", "L", "OT", or ""
 
+            # SAVES: prefer the direct field; fall back to shotsAgainst - goalsAgainst.
+            # This handles API responses where the field name changes between versions
+            # or where saves is null for a goalie who let in no goals with 0 shots.
+            ga_val  = float(g.get("goalsAgainst", 0))
+            saa_val = float(g.get("shotsAgainst", 0))
+            saves_raw = g.get("saves")
+            if saves_raw is not None:
+                saves_val = float(saves_raw)
+            elif saa_val > 0:
+                saves_val = max(0.0, saa_val - ga_val)
+            else:
+                saves_val = 0.0
+
             rows.append({
                 "GAME_DATE": g.get("gameDate", ""),
                 "GAME_ID":   str(g.get("gameId", "")),
@@ -336,8 +349,8 @@ class NHLStatsClient(BaseStatsClient):
                 "FOW":       float(fow_raw) if fow_raw is not None else 0.0,
                 "FOA":       float(foa_raw) if foa_raw is not None else 0.0,
                 # Goalie stats (zero for skaters; populated for goalies)
-                "SAVES":     float(g.get("saves", 0)),
-                "GA":        float(g.get("goalsAgainst", 0)),
+                "SAVES":     saves_val,
+                "GA":        ga_val,
                 "DECISION":  decision,   # "W", "L", "OT", or "" for skaters
             })
         return rows
@@ -450,6 +463,7 @@ class NHLStatsClient(BaseStatsClient):
     def get_game_stats_for_date(self, player_id: int, game_date: date) -> dict | None:
         try:
             _GAME_LOG_CACHE.invalidate("NHL", player_id)
+            self._game_log_cache.pop(player_id, None)  # clear in-memory cache too
             df = self.get_player_game_log(player_id)
             if df.empty or "GAME_DATE" not in df.columns:
                 return {"played": False}
