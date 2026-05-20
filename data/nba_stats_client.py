@@ -576,7 +576,22 @@ class NBAStatsClient:
         _GAME_LOG_CACHE.invalidate("NBA", player_id)
         if player_id in _PLAYER_CACHE:
             del _PLAYER_CACHE[player_id]
-        return super().get_game_stats_for_date(player_id, game_date)
+        try:
+            df = self.get_player_game_log(player_id)
+            if df.empty or "GAME_DATE" not in df.columns:
+                return {"played": False}
+            mask = df["GAME_DATE"].dt.date == game_date
+            rows = df[mask]
+            if rows.empty:
+                return {"played": False}
+            row = rows.iloc[0]
+            stat_cols = [c for c in df.columns
+                         if c not in ("GAME_DATE", "MATCHUP", "location", "opponent_abbr")]
+            stats = {c: float(row[c]) for c in stat_cols if c in row.index}
+            stats["played"] = True
+            return stats
+        except Exception:
+            return None
 
     # -------------------------------------------------------------------------
     # nba_api retry wrapper
