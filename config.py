@@ -104,7 +104,7 @@ OPPONENT_STAT_COL = {
     "Reb+Ast": "OPP_REB",
 }
 
-NBA_API_TIMEOUT = 8          # fail fast — stats.nba.com hangs rather than refusing
+NBA_API_TIMEOUT = 15         # stats.nba.com is slow; 8s caused false timeouts
 NBA_API_RETRY_ATTEMPTS = 2
 NBA_API_RETRY_MIN_WAIT = 1
 NBA_API_RETRY_MAX_WAIT = 3

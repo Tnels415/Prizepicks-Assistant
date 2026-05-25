@@ -183,6 +183,8 @@ class NBAStatsClient:
         from nba_api.stats.endpoints import playergamelog
         all_dfs = []
         for season_type in ("Regular Season", "Playoffs"):
+            if _NBA_API_UNAVAILABLE:
+                break  # server already proved down this run — don't waste another timeout
             try:
                 endpoint = self._nba_api_call(
                     playergamelog.PlayerGameLog,
@@ -339,8 +341,9 @@ class NBAStatsClient:
             if status == 404:
                 logger.debug("ESPN gamelog 404 for '%s' (ESPN id=%s)", player_name, espn_id)
             else:
-                logger.warning("ESPN gamelog HTTP %s for '%s': %s", status, player_name, exc)
-                _ESPN_UNAVAILABLE = True
+                # Transient error — log it but don't disable ESPN for all remaining players.
+                # Each player will still try ESPN independently.
+                logger.debug("ESPN gamelog HTTP %s for '%s': %s", status, player_name, exc)
             return None
         except Exception as exc:
             logger.debug("ESPN gamelog fetch failed for '%s': %s", player_name, exc)
