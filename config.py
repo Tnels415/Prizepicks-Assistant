@@ -423,6 +423,7 @@ SPORT_CONFIG: dict[str, dict] = {
             "pitcher_strikeouts": "Strikeouts",
         },
         "prop_stat_map": {
+            # Batter props
             "Hits": "H",
             "Home Runs": "HR",
             "RBIs": "RBI",
@@ -430,22 +431,53 @@ SPORT_CONFIG: dict[str, dict] = {
             "Runs Scored": "R",
             "Stolen Bases": "SB",
             "Strikeouts": "SO",
+            "Walks": "BB",
+            "Doubles": "DOUBLES",
+            "Triples": "TRIPLES",
+            "Singles": "SINGLES",
+            # Pitcher props
+            "Hits Allowed": "HA",
+            "Earned Runs Allowed": "ER",
+            "Walks Allowed": "BB_ALLOWED",
+            "Pitches Thrown": "PITCHES",
+            "Pitching Outs": "PITCHING_OUTS",
+            # Combo stats — handled via combo_stat_map
+            "Hits+Runs+RBIs": None,
         },
-        "combo_stat_map": {},
+        "combo_stat_map": {
+            "Hits+Runs+RBIs": ["H", "R", "RBI"],
+        },
         "opponent_stat_col": {},
         "outcome_stat_map": {
             "Hits": "H", "Home Runs": "HR", "RBIs": "RBI",
             "Total Bases": "TB", "Runs Scored": "R",
             "Stolen Bases": "SB", "Strikeouts": "SO",
+            "Walks": "BB", "Doubles": "DOUBLES", "Triples": "TRIPLES", "Singles": "SINGLES",
+            "Hits Allowed": "HA", "Earned Runs Allowed": "ER", "Walks Allowed": "BB_ALLOWED",
+            "Pitches Thrown": "PITCHES", "Pitching Outs": "PITCHING_OUTS",
+            "Hits+Runs+RBIs": ["H", "R", "RBI"],
         },
-        "counting_stats": {"Hits", "Home Runs", "RBIs", "Total Bases", "Runs Scored"},
+        "counting_stats": {
+            "Hits", "Home Runs", "RBIs", "Total Bases", "Runs Scored", "Stolen Bases",
+            "Walks", "Doubles", "Triples", "Singles", "Strikeouts",
+            "Hits Allowed", "Walks Allowed", "Pitches Thrown", "Pitching Outs",
+            "Hits+Runs+RBIs",
+        },
         "team_name_to_abbr": MLB_TEAM_NAME_TO_ABBR,
         "stats_client_class": "MLBStatsClient",
         "emoji": "⚾",
         "prizepicks_league_id": 2,
         "prizepicks_stat_map": {
+            # PrizePicks label → internal stat name
             "Pitcher Strikeouts": "Strikeouts",
-            "Hitter Fantasy Score": None,   # unsupported composite — skip
+            "Pitcher Strikeouts (Combo)": "Strikeouts",
+            "Hitter Strikeouts": "Strikeouts",
+            "Runs": "Runs Scored",
+            # Explicit skips — unsupported (logged at DEBUG, not WARNING)
+            "Hitter Fantasy Score": None,
+            "Pitcher Fantasy Score": None,
+            "1st Inning Runs Allowed": None,
+            "1st Inning Walks Allowed": None,
         },
         "dk_event_group_id": 40625,
     },

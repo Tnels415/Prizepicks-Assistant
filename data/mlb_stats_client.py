@@ -165,15 +165,34 @@ class MLBStatsClient(BaseStatsClient):
         elif pitching_df.empty:
             df = hitting_df
         else:
-            # Merge SO (pitcher strikeouts) into hitting rows where date matches
-            merged = hitting_df.merge(
-                pitching_df[["GAME_DATE", "SO"]].rename(columns={"SO": "_SO_p"}),
-                on="GAME_DATE",
-                how="left",
-            )
-            merged["SO"] = merged["_SO_p"].fillna(merged["SO"]).fillna(0.0)
-            merged = merged.drop(columns=["_SO_p"])
-            df = merged
+            # Merge all pitching-specific columns into hitting rows by date.
+            pitch_cols = [c for c in ("SO", "PITCHES", "PITCHING_OUTS", "HA", "ER", "BB_ALLOWED")
+                          if c in pitching_df.columns]
+            if pitch_cols:
+                merged = hitting_df.merge(
+                    pitching_df[["GAME_DATE"] + pitch_cols].rename(
+                        columns={c: f"_p_{c}" for c in pitch_cols}
+                    ),
+                    on="GAME_DATE",
+                    how="left",
+                )
+                for col in pitch_cols:
+                    p_col = f"_p_{col}"
+                    if col in merged.columns:
+                        merged[col] = merged[p_col].fillna(merged[col]).fillna(0.0)
+                    else:
+                        merged[col] = merged[p_col].fillna(0.0)
+                    merged = merged.drop(columns=[p_col])
+                df = merged
+            else:
+                df = hitting_df
+
+        # Compute SINGLES = H - HR - 2B - 3B (only meaningful for hitters)
+        if not df.empty and "H" in df.columns:
+            dbl = df["DOUBLES"] if "DOUBLES" in df.columns else pd.Series(0.0, index=df.index)
+            tri = df["TRIPLES"] if "TRIPLES" in df.columns else pd.Series(0.0, index=df.index)
+            df = df.copy()
+            df["SINGLES"] = (df["H"] - df["HR"] - dbl - tri).clip(lower=0)
 
         if not df.empty:
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
@@ -249,6 +268,16 @@ class MLBStatsClient(BaseStatsClient):
                 "TB":  float(stat.get("totalBases", 0)),
                 "SO":  float(stat.get("strikeOuts", 0)),
             }
+            if group == "hitting":
+                row["BB"]      = float(stat.get("baseOnBalls", 0))
+                row["DOUBLES"] = float(stat.get("doubles", 0))
+                row["TRIPLES"] = float(stat.get("triples", 0))
+            elif group == "pitching":
+                row["PITCHES"]       = float(stat.get("numberOfPitches", 0))
+                row["PITCHING_OUTS"] = float(stat.get("outs", 0))
+                row["HA"]            = float(stat.get("hits", 0))
+                row["ER"]            = float(stat.get("earnedRuns", 0))
+                row["BB_ALLOWED"]    = float(stat.get("baseOnBalls", 0))
             rows.append(row)
 
         if not rows:
@@ -279,10 +308,11 @@ class MLBStatsClient(BaseStatsClient):
             if rows.empty:
                 return {"played": False}
             row = rows.iloc[0]
+            meta = {"GAME_DATE", "MATCHUP", "location", "opponent_abbr"}
             stats = {
                 col: float(row[col])
-                for col in ("H", "HR", "RBI", "R", "SB", "TB", "SO")
-                if col in row.index
+                for col in df.columns
+                if col not in meta and col in row.index
             }
             stats["played"] = True
             return stats
