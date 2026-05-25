@@ -52,8 +52,24 @@ _NBA_API_UNAVAILABLE: bool = False
 # Set to True after the ESPN API returns an error so subsequent players skip it.
 _ESPN_UNAVAILABLE: bool = False
 
+# BallDontLie team ID → NBA abbreviation map, built on first BDL game-log call.
+_BDL_TEAM_ABBR: dict[int, str] = {}
+
 _ESPN_SEARCH_URL = "https://site.api.espn.com/apis/common/v3/search"
 _ESPN_GAMELOG_URL = "https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{}/gamelog"
+
+# ESPN uses non-standard abbreviations for several NBA teams.  Normalize to the
+# NBA-standard tricodes used everywhere else in this codebase so H2H lookups
+# match correctly (e.g. game log "NY" vs schedule "NYK" would produce 0 H2H hits).
+_ESPN_ABBR_MAP: dict[str, str] = {
+    "GS":   "GSW",   # Golden State Warriors
+    "SA":   "SAS",   # San Antonio Spurs
+    "NY":   "NYK",   # New York Knicks
+    "NO":   "NOP",   # New Orleans Pelicans
+    "UTAH": "UTA",   # Utah Jazz
+    "WSH":  "WAS",   # Washington Wizards
+    "PHX":  "PHX",   # Phoenix Suns (already matches but kept for completeness)
+}
 
 # Maps ESPN gamelog label strings to our internal DataFrame column names.
 _ESPN_LABEL_MAP: dict[str, str] = {
@@ -219,6 +235,21 @@ class NBAStatsClient:
         combined = combined.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
         return combined
 
+    def _ensure_bdl_team_map(self) -> None:
+        global _BDL_TEAM_ABBR
+        if _BDL_TEAM_ABBR or not self._bdl_key:
+            return
+        try:
+            resp = self._bdl_get("/teams", {"per_page": 100})
+            for t in resp.get("data", []):
+                tid = t.get("id")
+                abbr = t.get("abbreviation", "")
+                if tid and abbr:
+                    _BDL_TEAM_ABBR[tid] = abbr
+            logger.debug("BDL team map built: %d teams", len(_BDL_TEAM_ABBR))
+        except Exception as exc:
+            logger.debug("BDL team map fetch failed: %s", exc)
+
     def _fetch_game_log_bdl(self, player_id: int, player_name: str = "") -> pd.DataFrame | None:
         global _BDL_GAME_LOG_DISABLED
         if not self._bdl_key or _BDL_GAME_LOG_DISABLED:
@@ -238,6 +269,8 @@ class NBAStatsClient:
             logger.debug("BallDontLie: '%s' not found — skipping BDL game log", player_name)
             return None
 
+        self._ensure_bdl_team_map()
+
         try:
             from config import NBA_SEASON_YEAR
             records = self._bdl_paginate(
@@ -250,14 +283,17 @@ class NBAStatsClient:
             for r in records:
                 game = r.get("game", {})
                 home_id = game.get("home_team_id")
+                visitor_id = game.get("visitor_team_id")
                 team_id = r.get("team", {}).get("id")
+                opponent_id = visitor_id if team_id == home_id else home_id
                 location = "Home" if team_id == home_id else "Away"
                 matchup = r.get("team", {}).get("abbreviation", "")
+                opp_abbr = _BDL_TEAM_ABBR.get(opponent_id, "") if opponent_id else ""
                 rows.append({
                     "GAME_DATE":    pd.to_datetime(r.get("date", "")),
                     "MATCHUP":      matchup,
                     "location":     location,
-                    "opponent_abbr": "",
+                    "opponent_abbr": opp_abbr,
                     "MIN":          r.get("min", "0"),
                     "PTS":          r.get("pts", 0),
                     "REB":          r.get("reb", 0),
@@ -324,30 +360,38 @@ class NBAStatsClient:
         espn_id = self._find_espn_id(player_name)
         if espn_id is None:
             return None
-        try:
-            url = _ESPN_GAMELOG_URL.format(espn_id)
-            resp = requests.get(
-                url,
-                params={"season": NBA_SEASON_YEAR},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            df = self._parse_espn_gamelog(resp.json())
-            if df is not None and not df.empty:
-                logger.debug("ESPN: fetched %d games for '%s'", len(df), player_name)
-            return df
-        except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            if status == 404:
-                logger.debug("ESPN gamelog 404 for '%s' (ESPN id=%s)", player_name, espn_id)
-            else:
-                # Transient error — log it but don't disable ESPN for all remaining players.
-                # Each player will still try ESPN independently.
+        url = _ESPN_GAMELOG_URL.format(espn_id)
+        # ESPN uses the END year of the season (e.g. 2026 for the 2025-26 season)
+        # while NBA_SEASON_YEAR is the start year (2025).  Try end-year first and
+        # validate that at least one game falls within the current season; fall back
+        # to start-year in case ESPN changes its convention.
+        season_start = pd.Timestamp(f"{NBA_SEASON_YEAR}-10-01")
+        for season_param in (NBA_SEASON_YEAR + 1, NBA_SEASON_YEAR):
+            try:
+                resp = requests.get(url, params={"season": season_param}, timeout=10)
+                resp.raise_for_status()
+                df = self._parse_espn_gamelog(resp.json())
+                if df is not None and not df.empty:
+                    if (df["GAME_DATE"] >= season_start).any():
+                        logger.debug(
+                            "ESPN: fetched %d games for '%s' (season=%d)",
+                            len(df), player_name, season_param,
+                        )
+                        return df
+                    logger.debug(
+                        "ESPN season=%d returned %d games but none in current season"
+                        " — retrying with season=%d",
+                        season_param, len(df), NBA_SEASON_YEAR + 1 - season_param + NBA_SEASON_YEAR,
+                    )
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404:
+                    logger.debug("ESPN gamelog 404 for '%s' (ESPN id=%s)", player_name, espn_id)
+                    return None  # Player not found — no point retrying other year
                 logger.debug("ESPN gamelog HTTP %s for '%s': %s", status, player_name, exc)
-            return None
-        except Exception as exc:
-            logger.debug("ESPN gamelog fetch failed for '%s': %s", player_name, exc)
-            return None
+            except Exception as exc:
+                logger.debug("ESPN gamelog fetch failed for '%s': %s", player_name, exc)
+        return None
 
     def _parse_espn_gamelog(self, data: dict) -> pd.DataFrame | None:
         labels: list[str] = data.get("labels", [])
@@ -370,7 +414,8 @@ class NBAStatsClient:
 
             home_away = event.get("homeAway", "").lower()
             location = "Home" if home_away == "home" else "Away"
-            opp = (event.get("opponent") or {}).get("abbreviation", "")
+            opp_raw = (event.get("opponent") or {}).get("abbreviation", "")
+            opp = _ESPN_ABBR_MAP.get(opp_raw, opp_raw)  # normalize to NBA-standard tricode
             raw_date = event.get("date", "")
             try:
                 game_date = pd.to_datetime(raw_date, utc=True).tz_convert(None)
