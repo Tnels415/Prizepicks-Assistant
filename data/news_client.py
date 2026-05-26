@@ -19,6 +19,19 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Browser-like headers — ESPN blocks the default Python-requests User-Agent.
+_ESPN_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/",
+    "Origin": "https://www.espn.com",
+}
+
 # ESPN API routes
 _ESPN_SEARCH_URL = "https://site.api.espn.com/apis/common/v3/search"
 _ESPN_ATHLETE_NEWS_URL = (
@@ -72,6 +85,7 @@ def _espn_athlete_id(player_name: str, sport_slug: str, league_slug: str) -> str
                 "sport": sport_slug,
                 "league": league_slug,
             },
+            headers=_ESPN_HEADERS,
             timeout=8,
         )
         resp.raise_for_status()

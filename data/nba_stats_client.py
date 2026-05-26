@@ -58,6 +58,19 @@ _BDL_TEAM_ABBR: dict[int, str] = {}
 _ESPN_SEARCH_URL = "https://site.api.espn.com/apis/common/v3/search"
 _ESPN_GAMELOG_URL = "https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{}/gamelog"
 
+# Browser-like headers — ESPN blocks the default Python-requests User-Agent.
+_ESPN_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/",
+    "Origin": "https://www.espn.com",
+}
+
 # ESPN uses non-standard abbreviations for several NBA teams.  Normalize to the
 # NBA-standard tricodes used everywhere else in this codebase so H2H lookups
 # match correctly (e.g. game log "NY" vs schedule "NYK" would produce 0 H2H hits).
@@ -340,6 +353,7 @@ class NBAStatsClient:
                     "sport": "basketball",
                     "league": "nba",
                 },
+                headers=_ESPN_HEADERS,
                 timeout=10,
             )
             resp.raise_for_status()
@@ -368,7 +382,7 @@ class NBAStatsClient:
         season_start = pd.Timestamp(f"{NBA_SEASON_YEAR}-10-01")
         for season_param in (NBA_SEASON_YEAR + 1, NBA_SEASON_YEAR):
             try:
-                resp = requests.get(url, params={"season": season_param}, timeout=10)
+                resp = requests.get(url, params={"season": season_param}, headers=_ESPN_HEADERS, timeout=10)
                 resp.raise_for_status()
                 df = self._parse_espn_gamelog(resp.json())
                 if df is not None and not df.empty:

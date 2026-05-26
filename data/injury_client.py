@@ -24,6 +24,19 @@ _ESPN_ATHLETE_URL = (
     "https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/athletes/{athlete_id}"
 )
 
+# Browser-like headers — ESPN blocks the default Python-requests User-Agent.
+_ESPN_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/",
+    "Origin": "https://www.espn.com",
+}
+
 _SPORT_ESPN_MAP: dict[str, tuple[str, str]] = {
     "NBA": ("basketball", "nba"),
     "NHL": ("hockey", "nhl"),
@@ -50,6 +63,7 @@ def _espn_athlete_id(player_name: str, sport_slug: str, league_slug: str) -> str
                 "sport": sport_slug,
                 "league": league_slug,
             },
+            headers=_ESPN_HEADERS,
             timeout=8,
         )
         resp.raise_for_status()
@@ -58,7 +72,7 @@ def _espn_athlete_id(player_name: str, sport_slug: str, league_slug: str) -> str
             if "~a:" in uid:
                 return uid.split("~a:")[-1]
     except Exception as exc:
-        logger.debug("Injury: ESPN athlete search failed for '%s': %s", player_name, exc)
+        logger.info("Injury: ESPN athlete search failed for '%s': %s", player_name, exc)
     return None
 
 
@@ -71,19 +85,31 @@ def _espn_injury_status(
         url = _ESPN_ATHLETE_URL.format(
             sport=sport_slug, league=league_slug, athlete_id=athlete_id
         )
-        resp = requests.get(url, timeout=8)
+        resp = requests.get(url, headers=_ESPN_HEADERS, timeout=8)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
         athlete = resp.json().get("athlete", {})
 
-        # Primary signal: injuries array — any entry means the player has a designation.
+        # Signal 1: injuries array — any entry means the player has a designation.
         injuries = athlete.get("injuries", [])
         if injuries:
             designation = injuries[0].get("status") or injuries[0].get("type") or "Injured"
             return str(designation)
 
-        # Secondary signal: status object — type != "active" means limited/out.
+        # Signal 2: injuryStatus / injured — ESPN often uses these top-level fields
+        # for in-season designations like "Questionable" even when injuries[] is empty.
+        injury_status_str = (
+            athlete.get("injuryStatus")
+            or athlete.get("injuryStatusName")
+        )
+        if injury_status_str:
+            return str(injury_status_str)
+
+        if athlete.get("injured", False):
+            return "Injured"
+
+        # Signal 3: status object — type != "active" means limited/out.
         status = athlete.get("status", {})
         status_type = str(status.get("type", "active")).lower()
         if status_type not in ("active", ""):
@@ -97,7 +123,7 @@ def _espn_injury_status(
                 "ESPN injury API returned HTTP %s — disabling for this run", status_code
             )
         else:
-            logger.debug("Injury: ESPN athlete status fetch failed (id=%s): %s", athlete_id, exc)
+            logger.info("Injury: ESPN athlete status fetch failed (id=%s): %s", athlete_id, exc)
 
     return None
 
@@ -131,7 +157,9 @@ def get_player_injury_status(player_name: str, sport: str) -> str | None:
 
     athlete_id = _espn_athlete_id(player_name, sport_slug, league_slug)
     if athlete_id is None:
-        _INJURY_CACHE[cache_key] = (None, now)
+        # Don't cache search failures — the search endpoint may be transiently
+        # unavailable, and caching None would suppress injury checks for 1 hour
+        # even if the endpoint recovers or the designation is added later.
         return None
 
     designation = _espn_injury_status(athlete_id, sport_slug, league_slug)
