@@ -9,6 +9,7 @@ import pandas as pd
 from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
 from data.news_client import get_player_news_sentiment
+from data.injury_client import get_player_injury_status
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
 from config import SPORT_CONFIG, GOBLIN_STD_THRESHOLD
@@ -130,6 +131,16 @@ class PropAnalyzer:
         if player_id is None:
             logger.warning("Skipping %s — player ID not found", player_name)
             return None
+
+        # Suppress all props for players carrying any active injury designation.
+        # Checked before the game log fetch to avoid wasted API calls.
+        injury_status = get_player_injury_status(player_name, self._sport["name"])
+        if injury_status is not None:
+            logger.info(
+                "Suppressing %s %s — injury designation: %s",
+                player_name, stat_type, injury_status,
+            )
+            return []
 
         if player_name not in player_cache:
             player_cache[player_name] = self._stats.get_player_game_log(player_id)
