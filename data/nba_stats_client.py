@@ -647,12 +647,16 @@ class NBAStatsClient:
             if rows.empty:
                 return {"played": False}
             row = rows.iloc[0]
-            stat_cols = [c for c in df.columns
-                         if c not in ("GAME_DATE", "MATCHUP", "location", "opponent_abbr")]
+            _exclude = {"GAME_DATE", "MATCHUP", "location", "opponent_abbr"}
+            stat_cols = [
+                c for c in df.columns
+                if c not in _exclude and pd.api.types.is_numeric_dtype(df[c])
+            ]
             stats = {c: float(row[c]) for c in stat_cols if c in row.index}
             stats["played"] = True
             return stats
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_game_stats_for_date failed for NBA player %d: %s", player_id, exc)
             return None
 
     # -------------------------------------------------------------------------
