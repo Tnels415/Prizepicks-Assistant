@@ -17,6 +17,23 @@ PROPS_FILE = Path("props.json")
 # request.  Avoids hardcoding league_ids that PrizePicks may change.
 _PP_LEAGUE_MAP: dict[str, int] | None = None
 
+# Stat types that belong to non-target sports (e.g. MMA/UFC) and should be
+# silently discarded regardless of which sport is being fetched.  PrizePicks
+# periodically reassigns league IDs; when a configured ID ends up pointing at
+# MMA we'd otherwise flood the log with WARNING-level "unrecognized stat type"
+# messages before the dynamic-league-ID fallback has a chance to run.
+_GLOBALLY_IGNORED_STAT_TYPES: frozenset[str] = frozenset({
+    # MMA / UFC
+    "Significant Strikes",
+    "Total Rounds",
+    "Fight Time (Mins)",
+    "Takedowns",
+    "KD",
+    "Submission Attempts",
+    # Fantasy-score composite lines (not a real game stat)
+    "Fantasy Score",
+})
+
 # Sport name → list of PrizePicks league name patterns to match (case-insensitive
 # substring match against the league's "name" attribute in the /leagues response).
 _PP_LEAGUE_NAME_PATTERNS = {
@@ -92,9 +109,11 @@ class PrizePicksLiveClient:
         discovered_id = self._lookup_league_id(sport_name)
         if discovered_id and discovered_id != configured_id:
             logger.warning(
-                "PrizePicks %s: configured league_id=%s returned no props; "
-                "retrying with discovered league_id=%s. Update config.py to make this permanent.",
-                sport_name, configured_id, discovered_id,
+                "PrizePicks %s: configured league_id=%s returned no usable props "
+                "(it may have been reassigned to a different sport — e.g. UFC/MMA). "
+                "Retrying with dynamically discovered league_id=%s. "
+                "Update 'prizepicks_league_id' in config.py to %s to make this permanent.",
+                sport_name, configured_id, discovered_id, discovered_id,
             )
             props = self._fetch_with_league_id(discovered_id, sport_config)
             if props:
@@ -251,6 +270,11 @@ class PrizePicksLiveClient:
                 continue
 
             raw_stat = attrs.get("stat_type", "")
+            # Globally-ignored stat types (e.g. MMA stats leaking from a
+            # misassigned league_id) — silently discard, no WARNING.
+            if raw_stat in _GLOBALLY_IGNORED_STAT_TYPES:
+                explicitly_skipped[raw_stat] = explicitly_skipped.get(raw_stat, 0) + 1
+                continue
             # Normalize PrizePicks naming to our internal stat names
             stat_type = pp_stat_map.get(raw_stat, raw_stat)
             # None value in map means explicitly unsupported — skip silently
@@ -382,7 +406,8 @@ class PrizePicksLiveClient:
             )
         if explicitly_skipped:
             logger.debug(
-                "PrizePicks %s: %d projection(s) intentionally skipped (mapped to None): %s",
+                "PrizePicks %s: %d projection(s) silently skipped "
+                "(globally ignored or mapped to None in prizepicks_stat_map): %s",
                 sport_name,
                 sum(explicitly_skipped.values()),
                 dict(explicitly_skipped),
