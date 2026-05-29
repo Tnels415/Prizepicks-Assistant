@@ -176,6 +176,27 @@ def main() -> int:
         sport_results = analyzer.analyze_all_props(props)
 
         if sport_results:
+            # Save ALL analyzed props to history.db BEFORE trimming to top picks.
+            # Calibration needs volume — if we only save the top 10 per day we'd need
+            # months to accumulate the 15-sample minimum per probability bucket.
+            # Saving the full set gives 50-100+ data points/day/sport, which means
+            # factor weights and calibration corrections can activate within a week.
+            if store is not None:
+                try:
+                    all_player_ids = {
+                        r.player_name: stats_clients[sport_name].find_player_id(r.player_name)
+                        for r in sport_results
+                    }
+                    n_saved = store.save_predictions(
+                        sport_results, today, all_player_ids, sport=sport_name
+                    )
+                    logger.info(
+                        "Saved %d/%d %s predictions (all analyzed) to history.db",
+                        n_saved, len(sport_results), sport_name,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to save %s predictions: %s", sport_name, exc)
+
             sport_results = _top_picks(sport_results)
             results_by_sport[sport_name] = sport_results
             top = sport_results[0]
@@ -192,20 +213,6 @@ def main() -> int:
                 "running when the API is accessible; cached data lives in cache/game_logs/.",
                 sport_name, len(props),
             )
-
-        # Save today's picks for tomorrow's evaluation
-        if store is not None and sport_results:
-            try:
-                player_id_map = {
-                    r.player_name: stats_clients[sport_name].find_player_id(r.player_name)
-                    for r in sport_results
-                }
-                n_saved = store.save_predictions(
-                    sport_results, today, player_id_map, sport=sport_name
-                )
-                logger.info("Saved %d %s predictions to history.db", n_saved, sport_name)
-            except Exception as exc:
-                logger.warning("Failed to save %s predictions: %s", sport_name, exc)
 
     # --- No games at all? --------------------------------------------------
     if not any_games:
