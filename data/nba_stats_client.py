@@ -18,6 +18,7 @@ from config import (
     BALLDONTLIE_BASE_URL,
 )
 from data.game_log_cache import GameLogCache
+from data.game_log_archive import GameLogArchive
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,27 @@ _ESPN_HEADERS: dict[str, str] = {
 # ESPN uses non-standard abbreviations for several NBA teams.  Normalize to the
 # NBA-standard tricodes used everywhere else in this codebase so H2H lookups
 # match correctly (e.g. game log "NY" vs schedule "NYK" would produce 0 H2H hits).
+_ARCHIVE = GameLogArchive()
+
+
+def _merge_with_archive(sport: str, player_id: int, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Return union of *fresh* and the permanent archive, deduped newest-first."""
+    archived = _ARCHIVE.get(sport, player_id)
+    if archived is None or archived.empty:
+        return fresh if fresh is not None else pd.DataFrame()
+    if fresh is None or fresh.empty:
+        return archived
+    combined = pd.concat([fresh, archived], ignore_index=True)
+    if "GAME_DATE" in combined.columns:
+        combined = (
+            combined
+            .drop_duplicates(subset=["GAME_DATE"])
+            .sort_values("GAME_DATE", ascending=False)
+            .reset_index(drop=True)
+        )
+    return combined
+
+
 _ESPN_ABBR_MAP: dict[str, str] = {
     "GS":   "GSW",   # Golden State Warriors
     "SA":   "SAS",   # San Antonio Spurs
@@ -191,10 +213,11 @@ class NBAStatsClient:
             player_name = self._id_to_name.get(player_id, "")
             df = self._fetch_game_log_bdl(player_id, player_name)
 
-        # 3. On success, persist to disk cache.
+        # 3. On success, persist to disk cache and archive.
         if df is not None and not df.empty:
             df = self._add_derived_columns(df)
             _GAME_LOG_CACHE.set("NBA", player_id, df)
+            _ARCHIVE.merge("NBA", player_id, df)
         else:
             # 4. Both live sources failed — try stale cache (< 7 days old).
             stale = _GAME_LOG_CACHE.get_stale("NBA", player_id)
@@ -202,6 +225,9 @@ class NBAStatsClient:
                 df = stale
             else:
                 df = pd.DataFrame()
+
+        # 5. Merge with permanent archive so the analyzer sees full multi-season history.
+        df = _merge_with_archive("NBA", player_id, df)
 
         _PLAYER_CACHE[player_id] = df
         return df

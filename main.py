@@ -108,13 +108,18 @@ def main() -> int:
         n_evaluated = fetcher.evaluate_yesterday(yesterday)
         logger.info("Evaluated %d picks from %s", n_evaluated, yesterday.isoformat())
 
+        brier_scores: dict[str, float] = {}
         for sport in active_sports:
             calibrator = Calibrator(store, sport=sport)
-            corrections_by_sport[sport] = calibrator.compute_corrections(today)
+            corr = calibrator.compute_corrections(today)
+            corrections_by_sport[sport] = corr
+            if corr.brier_score is not None:
+                brier_scores[sport] = corr.brier_score
 
         # Yesterday's results for the email — all sports combined
         yesterday_results = store.get_results_for_date(yesterday)
         cumulative_stats = store.get_cumulative_accuracy()
+        cumulative_stats["brier_scores"] = brier_scores
     except Exception as exc:
         logger.warning("Learning layer failed (%s) — running with raw model", exc)
         store = None

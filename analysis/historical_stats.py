@@ -75,9 +75,12 @@ class HistoricalStatsCalculator:
         stat_type: str,
         line: float,
         opponent_abbr: str,
+        recency_half_life_days: int = 365,
     ) -> dict:
-        """
-        Filters the current-season game log for games vs. opponent_abbr this season.
+        """Filter the full (multi-season) game log for games vs. opponent_abbr.
+
+        Applies exponential recency weighting so older seasons contribute less.
+        A half_life_days of 365 means games from a year ago count half as much.
         Returns hit_rate, avg, and sample_size. Zeroes out if sample_size < 2.
         """
         if "opponent_abbr" not in df.columns or not opponent_abbr:
@@ -93,11 +96,34 @@ class HistoricalStatsCalculator:
         if series.empty:
             return {"hit_rate": 0.5, "avg": 0.0, "sample_size": 0, "reliable": False}
 
-        hit_rate = float((series > line).sum()) / len(series)
+        # Build recency weights from GAME_DATE if available.
+        if "GAME_DATE" in h2h_df.columns:
+            import pandas as pd
+            from datetime import date
+            today = pd.Timestamp(date.today())
+            aligned = h2h_df.loc[series.index, "GAME_DATE"] if "GAME_DATE" in h2h_df.columns else None
+            if aligned is not None:
+                ages_days = (today - pd.to_datetime(aligned)).dt.days.clip(lower=0)
+                weights = 0.5 ** (ages_days / recency_half_life_days)
+                weights = weights.fillna(1.0).values
+            else:
+                weights = None
+        else:
+            weights = None
+
+        if weights is not None and len(weights) == len(series):
+            import numpy as np
+            w = weights / weights.sum()
+            hit_rate = float(np.dot((series.values > line).astype(float), w))
+            avg = float(np.dot(series.values, w))
+        else:
+            hit_rate = float((series > line).sum()) / len(series)
+            avg = float(series.mean())
+
         reliable = len(series) >= 2
         return {
             "hit_rate": hit_rate,
-            "avg": float(series.mean()),
+            "avg": avg,
             "sample_size": len(series),
             "reliable": reliable,
         }

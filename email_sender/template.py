@@ -4,6 +4,25 @@ from typing import List
 from analysis.prop_analyzer import PropResult
 
 
+def _render_brier_badge(brier_scores: dict) -> str:
+    """Render a small Brier score badge for each sport.  Lower = better; 0.25 = coin-flip."""
+    if not brier_scores:
+        return ""
+    parts = []
+    for sport, score in sorted(brier_scores.items()):
+        color = "#28a745" if score < 0.20 else "#e67e22" if score < 0.25 else "#dc3545"
+        parts.append(
+            f"<span style='margin-right:12px'>"
+            f"<b>{sport}</b> Brier&nbsp;<span style='color:{color};font-weight:bold'>{score:.4f}</span>"
+            f"</span>"
+        )
+    return (
+        "<div style='margin-top:8px;font-size:11px;color:#555'>"
+        "Model calibration (Brier score — lower is better; 0.25 = coin-flip): "
+        + "".join(parts) + "</div>"
+    )
+
+
 def render_yesterday_section(
     yesterday_results: list,
     cumulative: dict,
@@ -95,6 +114,7 @@ def render_yesterday_section(
       {rows_html}
     </table>
     {f'<div style="margin-top:8px;font-size:11px;color:#777">Accuracy by stat type: {stat_accuracy}</div>' if stat_accuracy else ''}
+    {_render_brier_badge(cumulative.get("brier_scores", {}))}
   </div>"""
 
 

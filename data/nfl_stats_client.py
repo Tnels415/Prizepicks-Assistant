@@ -6,6 +6,27 @@ from datetime import date
 import pandas as pd
 
 from data.base_stats_client import BaseStatsClient
+from data.game_log_archive import GameLogArchive
+
+_ARCHIVE = GameLogArchive()
+
+
+def _merge_with_archive(player_id: int, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Return union of *fresh* and the permanent archive, deduped newest-first."""
+    archived = _ARCHIVE.get("NFL", player_id)
+    if archived is None or archived.empty:
+        return fresh if fresh is not None else pd.DataFrame()
+    if fresh is None or fresh.empty:
+        return archived
+    combined = pd.concat([fresh, archived], ignore_index=True)
+    if "GAME_DATE" in combined.columns:
+        combined = (
+            combined
+            .drop_duplicates(subset=["GAME_DATE"])
+            .sort_values("GAME_DATE", ascending=False)
+            .reset_index(drop=True)
+        )
+    return combined
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +111,12 @@ class NFLStatsClient(BaseStatsClient):
             return self._weekly_cache[player_id]
 
         df = self._build_player_log(player_id)
+
+        # Persist to archive and enrich with full history.
+        if df is not None and not df.empty:
+            _ARCHIVE.merge("NFL", player_id, df)
+        df = _merge_with_archive(player_id, df)
+
         self._weekly_cache[player_id] = df
         return df
 
