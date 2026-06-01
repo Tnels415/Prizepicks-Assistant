@@ -118,14 +118,35 @@ def render_yesterday_section(
   </div>"""
 
 
+def _render_sport_sections(results_by_sport: dict) -> str:
+    """Render per-sport headers + pick tables for a results dict."""
+    from config import SPORT_CONFIG
+    html = ""
+    for sport_name, sport_results in results_by_sport.items():
+        if not sport_results:
+            continue
+        cfg = SPORT_CONFIG.get(sport_name, {})
+        emoji = cfg.get("emoji", "")
+        full_name = cfg.get("full_name", sport_name)
+        html += f"""
+  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
+    {emoji} {full_name}
+  </div>"""
+        html += _render_picks_table(sport_results[:10])
+        html += '<div style="margin-bottom:12px"></div>'
+    return html
+
+
 def render_email_html(
     results_by_sport: dict[str, list[PropResult]],
     run_date: date,
     duration_secs: float,
     yesterday_section_html: str = "",
+    tv_results_by_sport: dict | None = None,
 ) -> str:
     """
     results_by_sport: {"NBA": [...], "NHL": [...], ...} mapping sport name to sorted PropResult list.
+    tv_results_by_sport: same shape, filtered to games watchable on the user's TV.
     """
     # Flatten for global top-5 summary
     all_results = [r for sport_results in results_by_sport.values() for r in sport_results]
@@ -143,22 +164,29 @@ def render_email_html(
         for r in top_5
     )
 
-    # Build per-sport table sections
-    sport_sections_html = ""
-    from config import SPORT_CONFIG
-    for sport_name, sport_results in results_by_sport.items():
-        if not sport_results:
-            continue
-        cfg = SPORT_CONFIG.get(sport_name, {})
-        emoji = cfg.get("emoji", "")
-        full_name = cfg.get("full_name", sport_name)
-
-        sport_sections_html += f"""
-  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
-    {emoji} {full_name}
+    # --- "Watchable on TV" section (rendered first) ----------------------
+    tv_results_by_sport = tv_results_by_sport or {}
+    tv_has_picks = any(tv_results_by_sport.values())
+    tv_section_html = """
+  <div style="padding:10px 20px;background:#0b6e4f;color:#fff;font-size:15px;font-weight:bold">
+    &#128250; Watchable on TV
   </div>"""
-        sport_sections_html += _render_picks_table(sport_results[:10])
-        sport_sections_html += '<div style="margin-bottom:12px"></div>'
+    if tv_has_picks:
+        tv_section_html += _render_sport_sections(tv_results_by_sport)
+    else:
+        tv_section_html += """
+  <div style="padding:10px 20px;background:#eafaf1;color:#0b6e4f;font-size:12.5px">
+    No watchable games matched your networks today &mdash; showing all picks below.
+    (Set <code>TV_NETWORKS</code> in your .env to include your regional sports networks.)
+  </div><div style="margin-bottom:12px"></div>"""
+
+    all_header_html = """
+  <div style="padding:10px 20px;background:#1a2a5e;color:#fff;font-size:15px;font-weight:bold">
+    &#128202; All Picks (Highest Probability)
+  </div>"""
+
+    # Build per-sport table sections (full, unfiltered)
+    sport_sections_html = tv_section_html + all_header_html + _render_sport_sections(results_by_sport)
 
     total_props = len(all_results)
     n_sports = len([s for s, r in results_by_sport.items() if r])
@@ -254,7 +282,7 @@ def _render_picks_table(picks: list) -> str:
   <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
     <thead>
       <tr>
-        <th>#</th><th>Player</th><th>Team</th><th>Direction</th>
+        <th>#</th><th>Player</th><th>Team</th><th>TV</th><th>Direction</th>
         <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
         <th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
       </tr>
@@ -283,10 +311,13 @@ def _render_row(r: PropResult) -> str:
     elif r.data_quality == "minimal":
         dq_badge = '<span class="dq-badge">minimal data</span>'
 
+    tv_label = getattr(r, "broadcast_label", "") or "&mdash;"
+
     return f"""      <tr class="{cc}">
         <td><strong>{r.rank}</strong></td>
         <td><strong>{r.player_name}</strong><br><span style="font-size:11px;color:#888">{r.position}</span></td>
         <td>{r.team_abbr}</td>
+        <td style="font-size:11px;color:#555">{tv_label}</td>
         <td><span class="{dir_cls}">{r.direction}</span></td>
         <td>{r.stat_type}</td>
         <td style="font-weight:bold">{r.line}</td>
@@ -298,12 +329,33 @@ def _render_row(r: PropResult) -> str:
       </tr>"""
 
 
+def _plain_sport_blocks(results_by_sport: dict) -> list[str]:
+    """Render plain-text per-sport top-10 blocks."""
+    out: list[str] = []
+    for sport_name, sport_results in results_by_sport.items():
+        if not sport_results:
+            continue
+        out.append(f"── {sport_name} — TOP 10 PICKS ──")
+        for r in sport_results[:10]:
+            dir_label = "OVER " if r.direction == "OVER" else "UNDER"
+            tv = getattr(r, "broadcast_label", "") or "-"
+            out.append(
+                f"{r.rank:>3}. {r.player_name:<22} "
+                f"{dir_label} {r.stat_type:<14} Line:{r.line:<6} "
+                f"Prob:{r.hit_probability:.0f}%  "
+                f"Pred:{r.predicted_value:.1f}  TV:{tv}"
+            )
+        out.append("")
+    return out
+
+
 def render_plain_text(
     results_by_sport: dict[str, list[PropResult]],
     run_date: date,
     yesterday_results: list | None = None,
     cumulative_stats: dict | None = None,
     yesterday_date: date | None = None,
+    tv_results_by_sport: dict | None = None,
 ) -> str:
     lines = [
         f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
@@ -356,19 +408,20 @@ def render_plain_text(
                 lines += [_pick_line(r) for r in incorrect_picks]
                 lines.append("")
 
-    for sport_name, sport_results in results_by_sport.items():
-        if not sport_results:
-            continue
-        lines.append(f"── {sport_name} — TOP 10 PICKS ──")
-        for r in sport_results[:10]:
-            dir_label = "OVER " if r.direction == "OVER" else "UNDER"
-            lines.append(
-                f"{r.rank:>3}. {r.player_name:<22} "
-                f"{dir_label} {r.stat_type:<14} Line:{r.line:<6} "
-                f"Prob:{r.hit_probability:.0f}%  "
-                f"Pred:{r.predicted_value:.1f}"
-            )
-        lines.append("")
+    tv_results_by_sport = tv_results_by_sport or {}
+    lines.append("==== 📺 WATCHABLE ON TV ====")
+    if any(tv_results_by_sport.values()):
+        lines += _plain_sport_blocks(tv_results_by_sport)
+    else:
+        lines += [
+            "  No watchable games matched your networks today — see all picks below.",
+            "  (Set TV_NETWORKS in your .env to include your regional sports networks.)",
+            "",
+        ]
+
+    lines.append("==== 📊 ALL PICKS (HIGHEST PROBABILITY) ====")
+    lines += _plain_sport_blocks(results_by_sport)
+
     lines += ["Data: stats.nba.com + nhle.com + mlb.com | Lines: PrizePicks",
               "Not financial advice."]
     return "\n".join(lines)

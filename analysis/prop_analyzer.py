@@ -12,6 +12,7 @@ from data.news_client import get_player_news_sentiment
 from data.injury_client import get_player_injury_status
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
+from analysis.watchability import watchable_label
 from config import SPORT_CONFIG, GOBLIN_STD_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ class PropResult:
     std_dev: float = 0.0
     hit_rate_5: float = 0.5
     hit_rate_10: float = 0.5
+    # TV broadcast info for the game this prop belongs to
+    broadcasts: list = field(default_factory=list)  # [{"network", "market"}]
+    broadcast_label: str = ""                        # display string, e.g. "ABC"
 
 
 class PropAnalyzer:
@@ -382,6 +386,8 @@ class PropAnalyzer:
             std_dev=consistency["std_dev"],
             hit_rate_5=hit_rates["hr_5"],
             hit_rate_10=hit_rates["hr_10"],
+            broadcasts=context.get("broadcasts", []),
+            broadcast_label=watchable_label(context.get("broadcasts", [])),
         )
 
         results = []
@@ -418,12 +424,14 @@ class PropAnalyzer:
                     "opponent_abbr": game["away_team_abbr"],
                     "opponent_id": game["away_team_id"],
                     "location": "Home",
+                    "broadcasts": game.get("broadcasts", []),
                 }
             if game["away_team_abbr"].upper() == team_abbr_upper:
                 return {
                     "opponent_abbr": game["home_team_abbr"],
                     "opponent_id": game["home_team_id"],
                     "location": "Away",
+                    "broadcasts": game.get("broadcasts", []),
                 }
         return None
 
@@ -448,10 +456,12 @@ class PropAnalyzer:
 
         if ta == eh:
             opp_id = self._team_abbr_to_id.get(ea, 0)
-            return {"opponent_abbr": event_away, "opponent_id": opp_id, "location": "Home"}
+            return {"opponent_abbr": event_away, "opponent_id": opp_id,
+                    "location": "Home", "broadcasts": []}
         if ta == ea:
             opp_id = self._team_abbr_to_id.get(eh, 0)
-            return {"opponent_abbr": event_home, "opponent_id": opp_id, "location": "Away"}
+            return {"opponent_abbr": event_home, "opponent_id": opp_id,
+                    "location": "Away", "broadcasts": []}
 
         return None
 
