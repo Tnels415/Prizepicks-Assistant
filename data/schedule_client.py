@@ -151,7 +151,7 @@ class ScheduleClient:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.debug("NBA broadcast enrichment skipped (ESPN fetch failed): %s", exc)
+            logger.warning("NBA broadcast enrichment skipped (ESPN fetch failed): %s", exc)
             return
 
         today_str = date.today().isoformat()
@@ -169,14 +169,24 @@ class ScheduleClient:
                     if abbr:
                         by_abbr[abbr] = bcasts
 
+        enriched = 0
         for g in games:
             if g.get("broadcasts"):
                 continue
-            g["broadcasts"] = (
+            bcasts = (
                 by_abbr.get(g.get("home_team_abbr", "").upper())
                 or by_abbr.get(g.get("away_team_abbr", "").upper())
                 or []
             )
+            g["broadcasts"] = bcasts
+            if bcasts:
+                enriched += 1
+
+        logger.info(
+            "NBA broadcast enrichment: %d/%d games matched to ESPN broadcast data "
+            "(ESPN abbr map has %d entries)",
+            enriched, len(games), len(by_abbr),
+        )
 
     def _try_nba_live_scoreboard(self) -> list[dict]:
         try:

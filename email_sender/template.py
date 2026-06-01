@@ -143,6 +143,7 @@ def render_email_html(
     duration_secs: float,
     yesterday_section_html: str = "",
     tv_results_by_sport: dict | None = None,
+    broadcast_coverage: dict | None = None,
 ) -> str:
     """
     results_by_sport: {"NBA": [...], "NHL": [...], ...} mapping sport name to sorted PropResult list.
@@ -166,6 +167,7 @@ def render_email_html(
 
     # --- "Watchable on TV" section (rendered first) ----------------------
     tv_results_by_sport = tv_results_by_sport or {}
+    broadcast_coverage = broadcast_coverage or {}
     tv_has_picks = any(tv_results_by_sport.values())
     tv_section_html = """
   <div style="padding:10px 20px;background:#0b6e4f;color:#fff;font-size:15px;font-weight:bold">
@@ -174,10 +176,24 @@ def render_email_html(
     if tv_has_picks:
         tv_section_html += _render_sport_sections(tv_results_by_sport)
     else:
-        tv_section_html += """
+        # Distinguish: broadcast data unavailable vs no matching networks
+        no_data_sports = [s for s, covered in broadcast_coverage.items() if not covered]
+        if no_data_sports and not any(broadcast_coverage.values()):
+            fallback_msg = (
+                "Broadcast data could not be fetched from ESPN today "
+                f"({', '.join(no_data_sports)}). "
+                "All picks are shown below — check logs for details."
+            )
+        else:
+            fallback_msg = (
+                "No games on national TV (ESPN/TNT/ABC/FOX/NBC etc.) today, "
+                "and no regional matches. "
+                "Set <code>TV_NETWORKS</code> in your .env to add your RSNs "
+                "(e.g. <code>TV_NETWORKS=Bally Sports,YES Network</code>)."
+            )
+        tv_section_html += f"""
   <div style="padding:10px 20px;background:#eafaf1;color:#0b6e4f;font-size:12.5px">
-    No watchable games matched your networks today &mdash; showing all picks below.
-    (Set <code>TV_NETWORKS</code> in your .env to include your regional sports networks.)
+    {fallback_msg}
   </div><div style="margin-bottom:12px"></div>"""
 
     all_header_html = """
@@ -356,6 +372,7 @@ def render_plain_text(
     cumulative_stats: dict | None = None,
     yesterday_date: date | None = None,
     tv_results_by_sport: dict | None = None,
+    broadcast_coverage: dict | None = None,
 ) -> str:
     lines = [
         f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
@@ -409,15 +426,25 @@ def render_plain_text(
                 lines.append("")
 
     tv_results_by_sport = tv_results_by_sport or {}
+    broadcast_coverage = broadcast_coverage or {}
     lines.append("==== 📺 WATCHABLE ON TV ====")
     if any(tv_results_by_sport.values()):
         lines += _plain_sport_blocks(tv_results_by_sport)
     else:
-        lines += [
-            "  No watchable games matched your networks today — see all picks below.",
-            "  (Set TV_NETWORKS in your .env to include your regional sports networks.)",
-            "",
-        ]
+        no_data_sports = [s for s, covered in broadcast_coverage.items() if not covered]
+        if no_data_sports and not any(broadcast_coverage.values()):
+            lines += [
+                f"  Broadcast data could not be fetched ({', '.join(no_data_sports)}).",
+                "  Check logs for details. All picks are shown below.",
+                "",
+            ]
+        else:
+            lines += [
+                "  No games on national TV (ESPN/TNT/ABC/FOX/NBC etc.) today.",
+                "  Set TV_NETWORKS in your .env to add your RSNs",
+                "  e.g.: TV_NETWORKS=Bally Sports,YES Network",
+                "",
+            ]
 
     lines.append("==== 📊 ALL PICKS (HIGHEST PROBABILITY) ====")
     lines += _plain_sport_blocks(results_by_sport)

@@ -142,6 +142,7 @@ def main() -> int:
     # --- Per-sport analysis ------------------------------------------------
     results_by_sport: dict[str, list[PropResult]] = {}
     tv_results_by_sport: dict[str, list[PropResult]] = {}
+    broadcast_coverage: dict[str, bool] = {}   # sport → True if any props had broadcast data
     any_games = False
     props_failed_sports: list[str] = []   # sports where prop loading returned nothing
 
@@ -214,6 +215,13 @@ def main() -> int:
                 copy.deepcopy(r) for r in sport_results
                 if is_watchable(r.broadcasts, tv_networks)
             ]
+            with_broadcasts = sum(1 for r in sport_results if r.broadcasts)
+            broadcast_coverage[sport_name] = with_broadcasts > 0
+            logger.info(
+                "%s: %d/%d props have broadcast data; %d watchable (TV_NETWORKS=%s)",
+                sport_name, with_broadcasts, len(sport_results), len(watchable),
+                cfg.get("tv_networks") or "(not set — only national networks count)",
+            )
             if watchable:
                 tv_results_by_sport[sport_name] = _top_picks(watchable)
 
@@ -303,6 +311,7 @@ def main() -> int:
         results_by_sport, today, duration,
         yesterday_section_html=yest_html,
         tv_results_by_sport=tv_results_by_sport,
+        broadcast_coverage=broadcast_coverage,
     )
     plain_body = render_plain_text(
         results_by_sport, today,
@@ -310,6 +319,7 @@ def main() -> int:
         cumulative_stats=cumulative_stats,
         yesterday_date=yesterday,
         tv_results_by_sport=tv_results_by_sport,
+        broadcast_coverage=broadcast_coverage,
     )
 
     send(subject, html_body, plain_body)
