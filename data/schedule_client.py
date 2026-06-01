@@ -136,8 +136,13 @@ class ScheduleClient:
             logger.warning("ESPN NBA scoreboard failed: %s", exc)
             return []
 
+        today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
         for event in data.get("events", []):
+            # ESPN returns a multi-day window; only keep today's games.
+            event_date = event.get("date", "")  # ISO-8601, e.g. "2025-06-01T17:00Z"
+            if event_date and event_date[:10] != today_str:
+                continue
             for comp in event.get("competitions", [{}]):
                 competitors = comp.get("competitors", [])
                 home = next((c for c in competitors if c.get("homeAway") == "home"), {})
@@ -168,7 +173,7 @@ class ScheduleClient:
                     ),
                 })
 
-        logger.info("ESPN NBA fallback: found %d games", len(games))
+        logger.info("ESPN NBA fallback: found %d games today", len(games))
         return games
 
     def _parse_nba_live_game(self, game: dict) -> dict | None:
@@ -242,8 +247,13 @@ class ScheduleClient:
             logger.warning("NFL schedule fetch failed: %s", exc)
             return []
 
+        today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
         for event in data.get("events", []):
+            # ESPN returns a multi-day window; only keep today's games.
+            event_date = event.get("date", "")  # ISO-8601, e.g. "2025-09-07T17:00Z"
+            if event_date and event_date[:10] != today_str:
+                continue
             for comp in event.get("competitions", [{}]):
                 competitors = comp.get("competitors", [])
                 home = next((c for c in competitors if c.get("homeAway") == "home"), {})

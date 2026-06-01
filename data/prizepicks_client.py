@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, timezone
 from pathlib import Path
 
 import requests
@@ -268,6 +269,30 @@ class PrizePicksLiveClient:
             if status not in ("pre_game", "pregame", None, ""):
                 skipped_status[status] = skipped_status.get(status, 0) + 1
                 continue
+
+            # Only include props for games happening today (local date).
+            # start_time is an ISO-8601 UTC string, e.g. "2025-06-01T17:00:00Z".
+            # Props with no start_time are passed through (offline/manual props.json).
+            raw_start = attrs.get("start_time") or attrs.get("start_time_utc") or ""
+            if raw_start:
+                try:
+                    from datetime import datetime as _dt
+                    st = _dt.fromisoformat(raw_start.replace("Z", "+00:00"))
+                    # Convert to local date for comparison
+                    game_date = st.astimezone().date()
+                    if game_date != date.today():
+                        logger.debug(
+                            "Skipping %s prop — game date %s is not today (%s)",
+                            attrs.get("stat_type", ""),
+                            game_date.isoformat(),
+                            date.today().isoformat(),
+                        )
+                        skipped_status[f"wrong_date:{game_date}"] = (
+                            skipped_status.get(f"wrong_date:{game_date}", 0) + 1
+                        )
+                        continue
+                except Exception:
+                    pass  # unparseable start_time — let it through
 
             raw_stat = attrs.get("stat_type", "")
             # Globally-ignored stat types (e.g. MMA stats leaking from a
