@@ -8,6 +8,7 @@ import pandas as pd
 
 from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
+import analysis.distribution_model as _dist_model
 from data.news_client import get_player_news_sentiment
 from data.injury_client import get_player_injury_status
 from analysis.historical_stats import HistoricalStatsCalculator
@@ -54,6 +55,9 @@ class PropResult:
     # TV broadcast info for the game this prop belongs to
     broadcasts: list = field(default_factory=list)  # [{"network", "market"}]
     broadcast_label: str = ""                        # display string, e.g. "ABC"
+    # Edge + tier (Phase 3)
+    edge: float = 0.0          # hit_probability/100 − PRIZEPICKS_BREAKEVEN
+    tier: str = "speculative"  # "A" (high confidence) or "speculative"
 
 
 class PropAnalyzer:
@@ -110,6 +114,9 @@ class PropAnalyzer:
         results.sort(key=lambda r: r.hit_probability, reverse=True)
         for i, r in enumerate(results, 1):
             r.rank = i
+
+        # Compute edge + tier for every result (Phase 3)
+        _assign_edge_and_tier(results)
 
         unique_players = len(results) // 2 if results else 0
         logger.info(
@@ -306,10 +313,53 @@ class PropAnalyzer:
         )
         delta_sentiment = self._scorer.score_analyst_sentiment(news_sentiment)
 
-        adjustments = [delta_season, delta_form, delta_h2h, delta_opp,
-                       delta_loc, delta_rest, delta_pace,
-                       delta_consistency, delta_hit_trend, delta_trend_dir,
-                       delta_sentiment]
+        # Compute predicted value early — needed as the projected mean for the
+        # distribution model and for PropResult construction below.
+        predicted = self._compute_predicted_value(
+            avgs["last_5_avg"], avgs["last_10_avg"], avgs["season_avg"]
+        )
+
+        # --- Distribution-based probability base (Phase 1) -------------------
+        # Replace the raw hit_rate_20 * 100 base with P(over) from a fitted
+        # Negative Binomial (small-count stats) or Gaussian (continuous/large).
+        # When the distribution fit fails (too few games, zero variance, etc.)
+        # the call returns None and we fall back to the legacy empirical base.
+        stat_series = self._calc.get_stat_series(game_log, stat_type)
+        dist_result = _dist_model.prob_over(stat_type, line, predicted, stat_series)
+        dist_base: float | None = dist_result[0] if dist_result is not None else None
+
+        # Factors that are directly derived from the same game-log series are
+        # downweighted when the distribution already captures that information.
+        # Independent contextual factors (h2h, opponent, location, rest, pace,
+        # sentiment) are left at full weight.
+        _DIST_SCALE = 0.5   # scale for series-redundant factors when dist is used
+        if dist_base is not None:
+            adj_season    = delta_season    * _DIST_SCALE
+            adj_form      = delta_form      * _DIST_SCALE
+            adj_h2h       = delta_h2h                       # independent
+            adj_opp       = delta_opp                       # independent
+            adj_loc       = delta_loc                       # independent
+            adj_rest      = delta_rest                      # independent
+            adj_pace      = delta_pace                      # independent
+            adj_consist   = delta_consistency * _DIST_SCALE
+            adj_hit_trend = delta_hit_trend   * _DIST_SCALE
+            adj_trend_dir = delta_trend_dir   * _DIST_SCALE
+            adj_sentiment = delta_sentiment                 # independent
+            logger.debug(
+                "%s %s: dist base=%.1f%% (was hit_rate=%.1f%%)",
+                player_name, stat_type, dist_base, hit_rate_20 * 100,
+            )
+        else:
+            adj_season = delta_season; adj_form = delta_form
+            adj_h2h = delta_h2h; adj_opp = delta_opp; adj_loc = delta_loc
+            adj_rest = delta_rest; adj_pace = delta_pace
+            adj_consist = delta_consistency; adj_hit_trend = delta_hit_trend
+            adj_trend_dir = delta_trend_dir; adj_sentiment = delta_sentiment
+
+        adjustments = [adj_season, adj_form, adj_h2h, adj_opp,
+                       adj_loc, adj_rest, adj_pace,
+                       adj_consist, adj_hit_trend, adj_trend_dir,
+                       adj_sentiment]
 
         learned_weights = (
             self._corrections.factor_weights
@@ -317,7 +367,9 @@ class PropAnalyzer:
             else None
         )
         over_prob = self._scorer.compute_composite_probability(
-            hit_rate_20, adjustments, learned_weights=learned_weights
+            hit_rate_20, adjustments,
+            learned_weights=learned_weights,
+            base_prob=dist_base,
         )
 
         if self._corrections and self._corrections.has_sufficient_data:
@@ -338,10 +390,6 @@ class PropAnalyzer:
 
         under_prob = 100.0 - over_prob
 
-        predicted = self._compute_predicted_value(
-            avgs["last_5_avg"], avgs["last_10_avg"], avgs["season_avg"]
-        )
-
         raw_adj = {
             "season_avg_vs_line": delta_season,
             "recent_form": delta_form,
@@ -354,6 +402,9 @@ class PropAnalyzer:
             "hit_rate_trend": delta_hit_trend,
             "trend_direction": delta_trend_dir,
             "analyst_sentiment": delta_sentiment,
+            # Distribution model diagnostic — stored but excluded from FACTOR_NAMES
+            # so the calibrator's factor-weight loop ignores it.
+            "_dist_over": round(dist_base, 2) if dist_base is not None else None,
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)
@@ -514,3 +565,47 @@ class PropAnalyzer:
             factors.append(f"{label}: {sign}{val:.1f}pp")
 
         return factors[:5]
+
+
+# ---------------------------------------------------------------------------
+# Edge + tier helpers (Phase 3)
+# ---------------------------------------------------------------------------
+
+def _assign_edge_and_tier(results: list[PropResult]) -> None:
+    """Compute edge and tier for every PropResult in-place.
+
+    edge = hit_probability/100 − PRIZEPICKS_BREAKEVEN
+
+    A-tier when ALL of:
+    - hit_probability >= A_TIER_MIN_PROB
+    - edge >= A_TIER_MIN_EDGE
+    - data_quality != "minimal"
+    - games_analyzed >= MIN_GAMES_FOR_A_TIER
+    """
+    from config import PRIZEPICKS_BREAKEVEN, A_TIER_MIN_PROB, A_TIER_MIN_EDGE, MIN_GAMES_FOR_A_TIER
+    for r in results:
+        r.edge = round(r.hit_probability / 100.0 - PRIZEPICKS_BREAKEVEN, 4)
+        qualifies = (
+            r.hit_probability >= A_TIER_MIN_PROB
+            and r.edge >= A_TIER_MIN_EDGE
+            and r.data_quality != "minimal"
+            and r.games_analyzed >= MIN_GAMES_FOR_A_TIER
+        )
+        r.tier = "A" if qualifies else "speculative"
+
+
+def rank_and_tier(results: list[PropResult]) -> list[PropResult]:
+    """Return a sorted copy: A-tier picks first (by edge desc), speculative below (by prob desc).
+
+    This is the single canonical sort used by both main.py and the email template
+    to guarantee consistent ordering.
+    """
+    a_tier = sorted(
+        [r for r in results if r.tier == "A"],
+        key=lambda r: r.edge, reverse=True,
+    )
+    speculative = sorted(
+        [r for r in results if r.tier != "A"],
+        key=lambda r: r.hit_probability, reverse=True,
+    )
+    return a_tier + speculative

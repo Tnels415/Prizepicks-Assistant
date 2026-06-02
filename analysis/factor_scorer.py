@@ -202,15 +202,27 @@ class FactorScorer:
         hit_rate_20: float,
         adjustments: list[float],
         learned_weights: dict[str, float] | None = None,
+        base_prob: float | None = None,
+        dist_factor_scale: float = 1.0,
     ) -> float:
-        base = hit_rate_20 * 100.0
+        """Compute composite probability.
+
+        base_prob: if provided (distribution model result), use it as the base
+            instead of hit_rate_20*100.  Factors that redundantly capture
+            series-level information should be pre-scaled before this call
+            (via dist_factor_scale) to avoid double-counting.
+        dist_factor_scale: multiplier applied to every adjustment when a
+            distribution base is in use.  Redundant factors (season avg vs
+            line, recent form, etc.) are further scaled by the caller.
+        """
+        base = base_prob if base_prob is not None else hit_rate_20 * 100.0
         if learned_weights:
             from learning.history_store import FACTOR_NAMES
             weighted_sum = sum(
-                adj * learned_weights.get(FACTOR_NAMES[i], 1.0)
+                adj * dist_factor_scale * learned_weights.get(FACTOR_NAMES[i], 1.0)
                 for i, adj in enumerate(adjustments)
             )
         else:
-            weighted_sum = sum(adjustments)
+            weighted_sum = sum(adj * dist_factor_scale for adj in adjustments)
         total = base + weighted_sum
         return float(max(5.0, min(95.0, total)))
