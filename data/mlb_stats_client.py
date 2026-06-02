@@ -10,14 +10,34 @@ import requests
 from config import STATS_API_TIMEOUT
 from data.base_stats_client import BaseStatsClient
 from data.game_log_cache import GameLogCache
+from data.game_log_archive import GameLogArchive
 
 logger = logging.getLogger(__name__)
 
 # Module-level cache singleton shared across all MLBStatsClient instances.
 _GAME_LOG_CACHE = GameLogCache()
+_ARCHIVE = GameLogArchive()
 
 # Set to True after the MLB API times out so remaining players skip live calls.
 _MLB_API_UNAVAILABLE: bool = False
+
+
+def _merge_with_archive(player_id: int, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Return union of *fresh* and the permanent archive, deduped newest-first."""
+    archived = _ARCHIVE.get("MLB", player_id)
+    if archived is None or archived.empty:
+        return fresh if fresh is not None else pd.DataFrame()
+    if fresh is None or fresh.empty:
+        return archived
+    combined = pd.concat([fresh, archived], ignore_index=True)
+    if "GAME_DATE" in combined.columns:
+        combined = (
+            combined
+            .drop_duplicates(subset=["GAME_DATE"])
+            .sort_values("GAME_DATE", ascending=False)
+            .reset_index(drop=True)
+        )
+    return combined
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
@@ -197,14 +217,18 @@ class MLBStatsClient(BaseStatsClient):
         if not df.empty:
             df = df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
 
-        # 3. On success, persist to disk cache.
+        # 3. On success, persist to disk cache and archive.
         if not df.empty:
             _GAME_LOG_CACHE.set("MLB", player_id, df)
+            _ARCHIVE.merge("MLB", player_id, df)
         else:
             # 4. Live fetch returned nothing — try stale cache (< 7 days old).
             stale = _GAME_LOG_CACHE.get_stale("MLB", player_id)
             if stale is not None:
                 df = stale
+
+        # 5. Merge with permanent archive so the analyzer sees full multi-season history.
+        df = _merge_with_archive(player_id, df)
 
         self._game_log_cache[player_id] = df
         return df

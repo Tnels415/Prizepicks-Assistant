@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import time
 import json
-from datetime import date
+import os
+import concurrent.futures
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import requests
@@ -18,6 +20,7 @@ from config import (
     BALLDONTLIE_BASE_URL,
 )
 from data.game_log_cache import GameLogCache
+from data.game_log_archive import GameLogArchive
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +49,43 @@ _PLAYER_USAGE_CACHE: dict[int, float] = {}
 _BDL_GAME_LOG_DISABLED: bool = False
 
 # Set to True after stats.nba.com times out so subsequent players skip the
-# live call entirely and go straight to disk cache / BDL fallback.
+# live call entirely and go straight to ESPN / BDL fallback.
 _NBA_API_UNAVAILABLE: bool = False
+
+# Path to sentinel file — written when nba_api times out, read on startup to
+# skip nba_api for a cooldown window without waiting for another timeout.
+_NBA_API_DOWN_SENTINEL = os.path.join(
+    os.path.dirname(__file__), "..", "cache", "nba_api_down.tmp"
+)
+_NBA_API_DOWN_COOLDOWN_SECS = 90 * 60  # 90 minutes
+
+
+def _nba_api_is_cooling_down() -> bool:
+    """Return True if a recent timeout sentinel file says to skip nba_api."""
+    try:
+        mtime = os.path.getmtime(_NBA_API_DOWN_SENTINEL)
+        age = datetime.now(timezone.utc).timestamp() - mtime
+        if age < _NBA_API_DOWN_COOLDOWN_SECS:
+            logger.info(
+                "Skipping stats.nba.com for %.0f more minutes (timed out last run).",
+                (_NBA_API_DOWN_COOLDOWN_SECS - age) / 60,
+            )
+            return True
+        os.remove(_NBA_API_DOWN_SENTINEL)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return False
+
+
+def _write_nba_api_down_sentinel() -> None:
+    try:
+        os.makedirs(os.path.dirname(_NBA_API_DOWN_SENTINEL), exist_ok=True)
+        with open(_NBA_API_DOWN_SENTINEL, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except Exception:
+        pass
 
 # Set to True after the ESPN API returns an error so subsequent players skip it.
 _ESPN_UNAVAILABLE: bool = False
@@ -74,6 +112,27 @@ _ESPN_HEADERS: dict[str, str] = {
 # ESPN uses non-standard abbreviations for several NBA teams.  Normalize to the
 # NBA-standard tricodes used everywhere else in this codebase so H2H lookups
 # match correctly (e.g. game log "NY" vs schedule "NYK" would produce 0 H2H hits).
+_ARCHIVE = GameLogArchive()
+
+
+def _merge_with_archive(sport: str, player_id: int, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Return union of *fresh* and the permanent archive, deduped newest-first."""
+    archived = _ARCHIVE.get(sport, player_id)
+    if archived is None or archived.empty:
+        return fresh if fresh is not None else pd.DataFrame()
+    if fresh is None or fresh.empty:
+        return archived
+    combined = pd.concat([fresh, archived], ignore_index=True)
+    if "GAME_DATE" in combined.columns:
+        combined = (
+            combined
+            .drop_duplicates(subset=["GAME_DATE"])
+            .sort_values("GAME_DATE", ascending=False)
+            .reset_index(drop=True)
+        )
+    return combined
+
+
 _ESPN_ABBR_MAP: dict[str, str] = {
     "GS":   "GSW",   # Golden State Warriors
     "SA":   "SAS",   # San Antonio Spurs
@@ -177,24 +236,28 @@ class NBAStatsClient:
             _PLAYER_CACHE[player_id] = cached
             return cached
 
-        # 2. Try live nba_api (skip if stats.nba.com already timed out this run).
-        df = None if _NBA_API_UNAVAILABLE else self._fetch_game_log_nba_api(player_id)
-
-        # 3. ESPN unofficial API — free, no auth, reliable game logs.
-        if (df is None or df.empty) and not _ESPN_UNAVAILABLE:
+        # 2. ESPN unofficial API — fast, free, no auth; used as primary live source.
+        #    nba_api (stats.nba.com) is used as a supplement only when ESPN fails,
+        #    because stats.nba.com periodically rate-limits or hangs.
+        if not _ESPN_UNAVAILABLE:
             player_name = self._id_to_name.get(player_id, "")
             if player_name:
                 df = self._fetch_game_log_espn(player_name)
+
+        # 3. nba_api fallback — only if ESPN failed and stats.nba.com is reachable.
+        if (df is None or df.empty) and not _NBA_API_UNAVAILABLE and not _nba_api_is_cooling_down():
+            df = self._fetch_game_log_nba_api(player_id)
 
         if df is None or df.empty:
             # Look up the original search name so BallDontLie can find its own ID.
             player_name = self._id_to_name.get(player_id, "")
             df = self._fetch_game_log_bdl(player_id, player_name)
 
-        # 3. On success, persist to disk cache.
+        # 3. On success, persist to disk cache and archive.
         if df is not None and not df.empty:
             df = self._add_derived_columns(df)
             _GAME_LOG_CACHE.set("NBA", player_id, df)
+            _ARCHIVE.merge("NBA", player_id, df)
         else:
             # 4. Both live sources failed — try stale cache (< 7 days old).
             stale = _GAME_LOG_CACHE.get_stale("NBA", player_id)
@@ -202,6 +265,9 @@ class NBAStatsClient:
                 df = stale
             else:
                 df = pd.DataFrame()
+
+        # 5. Merge with permanent archive so the analyzer sees full multi-season history.
+        df = _merge_with_archive("NBA", player_id, df)
 
         _PLAYER_CACHE[player_id] = df
         return df
@@ -365,6 +431,11 @@ class NBAStatsClient:
             if "~a:" not in uid:
                 return None
             return uid.split("~a:")[-1]
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            global _ESPN_UNAVAILABLE
+            _ESPN_UNAVAILABLE = True
+            logger.warning("ESPN search API unreachable — disabling ESPN for this run: %s", exc)
+            return None
         except Exception as exc:
             logger.debug("ESPN player search failed for '%s': %s", player_name, exc)
             return None
@@ -403,6 +474,12 @@ class NBAStatsClient:
                     logger.debug("ESPN gamelog 404 for '%s' (ESPN id=%s)", player_name, espn_id)
                     return None  # Player not found — no point retrying other year
                 logger.debug("ESPN gamelog HTTP %s for '%s': %s", status, player_name, exc)
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                _ESPN_UNAVAILABLE = True
+                logger.warning(
+                    "ESPN game log API unreachable — disabling ESPN for this run: %s", exc,
+                )
+                return None
             except Exception as exc:
                 logger.debug("ESPN gamelog fetch failed for '%s': %s", player_name, exc)
         return None
@@ -664,24 +741,45 @@ class NBAStatsClient:
     # -------------------------------------------------------------------------
 
     def _nba_api_call(self, endpoint_class, **kwargs):
+        """Call a nba_api endpoint with a hard wall-clock timeout enforced via a thread.
+
+        nba_api passes `timeout` to its HTTP layer, but stats.nba.com sometimes hangs
+        at the TCP level before Python's socket timeout fires. Wrapping in a Future
+        gives us a reliable kill switch regardless of where the hang occurs.
+        """
         global _NBA_API_UNAVAILABLE
+        # Hard ceiling: 2× the configured timeout so we never wait more than this
+        # even if the library ignores its own timeout parameter.
+        hard_deadline = NBA_API_TIMEOUT * 2
+
         last_exc = None
         for attempt in range(NBA_API_RETRY_ATTEMPTS):
             try:
-                return endpoint_class(**kwargs)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(endpoint_class, **kwargs)
+                    try:
+                        return fut.result(timeout=hard_deadline)
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError(
+                            f"stats.nba.com timed out after {hard_deadline}s (hard deadline)"
+                        )
             except Exception as exc:
                 last_exc = exc
                 exc_str = str(exc).lower()
-                is_timeout = "timed out" in exc_str or "timeout" in exc_str
+                is_timeout = (
+                    "timed out" in exc_str
+                    or "timeout" in exc_str
+                    or isinstance(exc, TimeoutError)
+                )
                 if is_timeout:
-                    # stats.nba.com is hanging — mark it down for this run so
-                    # all remaining players skip the live call immediately.
                     _NBA_API_UNAVAILABLE = True
+                    _write_nba_api_down_sentinel()
                     logger.warning(
                         "stats.nba.com timed out — marking NBA stats API unavailable "
-                        "for this run; remaining players will use disk cache.",
+                        "for this run and next %.0f min; remaining players will use ESPN/cache.",
+                        _NBA_API_DOWN_COOLDOWN_SECS / 60,
                     )
-                    break  # no point retrying a hanging server
+                    break
                 wait = NBA_API_RETRY_MIN_WAIT * (2 ** attempt)
                 logger.debug(
                     "nba_api call %s attempt %d failed: %s — retrying in %ds",

@@ -13,6 +13,7 @@ Cron (daily 10 AM Eastern):
     0 10 * * * /usr/bin/python3 /path/to/main.py >> /var/log/props.log 2>&1
 """
 
+import copy
 import logging
 import sys
 import time
@@ -28,6 +29,7 @@ from data.nhl_stats_client import NHLStatsClient
 from data.mlb_stats_client import MLBStatsClient
 from data.nfl_stats_client import NFLStatsClient
 from analysis.prop_analyzer import PropAnalyzer, PropResult
+from analysis.watchability import is_watchable
 from learning.history_store import HistoryStore
 from learning.outcome_fetcher import OutcomeFetcher
 from learning.calibrator import Calibrator, Corrections
@@ -108,13 +110,18 @@ def main() -> int:
         n_evaluated = fetcher.evaluate_yesterday(yesterday)
         logger.info("Evaluated %d picks from %s", n_evaluated, yesterday.isoformat())
 
+        brier_scores: dict[str, float] = {}
         for sport in active_sports:
             calibrator = Calibrator(store, sport=sport)
-            corrections_by_sport[sport] = calibrator.compute_corrections(today)
+            corr = calibrator.compute_corrections(today)
+            corrections_by_sport[sport] = corr
+            if corr.brier_score is not None:
+                brier_scores[sport] = corr.brier_score
 
         # Yesterday's results for the email — all sports combined
         yesterday_results = store.get_results_for_date(yesterday)
         cumulative_stats = store.get_cumulative_accuracy()
+        cumulative_stats["brier_scores"] = brier_scores
     except Exception as exc:
         logger.warning("Learning layer failed (%s) — running with raw model", exc)
         store = None
@@ -134,6 +141,8 @@ def main() -> int:
 
     # --- Per-sport analysis ------------------------------------------------
     results_by_sport: dict[str, list[PropResult]] = {}
+    tv_results_by_sport: dict[str, list[PropResult]] = {}
+    broadcast_coverage: dict[str, bool] = {}   # sport → True if any props had broadcast data
     any_games = False
     props_failed_sports: list[str] = []   # sports where prop loading returned nothing
 
@@ -196,6 +205,25 @@ def main() -> int:
                     )
                 except Exception as exc:
                     logger.warning("Failed to save %s predictions: %s", sport_name, exc)
+
+            # Build the TV-watchable view from the FULL analyzed set (before the
+            # all-picks top-10 trim) so watchable picks aren't pre-trimmed away.
+            # Use deep copies so re-ranking the TV view doesn't clobber the
+            # all-picks ranks (both views share the same PropResult objects).
+            tv_networks = cfg.get("tv_networks", set())
+            watchable = [
+                copy.deepcopy(r) for r in sport_results
+                if is_watchable(r.broadcasts, tv_networks)
+            ]
+            with_broadcasts = sum(1 for r in sport_results if r.broadcasts)
+            broadcast_coverage[sport_name] = with_broadcasts > 0
+            logger.info(
+                "%s: %d/%d props have broadcast data; %d watchable (TV_NETWORKS=%s)",
+                sport_name, with_broadcasts, len(sport_results), len(watchable),
+                cfg.get("tv_networks") or "(not set — only national networks count)",
+            )
+            if watchable:
+                tv_results_by_sport[sport_name] = _top_picks(watchable)
 
             sport_results = _top_picks(sport_results)
             results_by_sport[sport_name] = sport_results
@@ -279,12 +307,19 @@ def main() -> int:
     )
 
     yest_html = render_yesterday_section(yesterday_results, cumulative_stats, yesterday)
-    html_body = render_email_html(results_by_sport, today, duration, yesterday_section_html=yest_html)
+    html_body = render_email_html(
+        results_by_sport, today, duration,
+        yesterday_section_html=yest_html,
+        tv_results_by_sport=tv_results_by_sport,
+        broadcast_coverage=broadcast_coverage,
+    )
     plain_body = render_plain_text(
         results_by_sport, today,
         yesterday_results=yesterday_results,
         cumulative_stats=cumulative_stats,
         yesterday_date=yesterday,
+        tv_results_by_sport=tv_results_by_sport,
+        broadcast_coverage=broadcast_coverage,
     )
 
     send(subject, html_body, plain_body)

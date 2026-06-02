@@ -246,6 +246,28 @@ class HistoryStore:
             result.append(d)
         return result
 
+    def get_all_evaluated_predictions(self, sport: str = "NBA") -> list[dict]:
+        """Return all evaluated predictions for *sport* with no day-count gate.
+
+        The calibrator applies shrinkage and time-decay, so no hard sample gate is
+        needed here; every evaluated prediction contributes proportionally.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM predictions WHERE correct IN (0, 1) AND sport=?",
+                (sport,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("raw_adjustments"):
+                try:
+                    d["raw_adjustments"] = json.loads(d["raw_adjustments"])
+                except Exception:
+                    d["raw_adjustments"] = {}
+            result.append(d)
+        return result
+
     def get_player_accuracy(
         self, sport: str = "NBA", min_samples: int = 10
     ) -> dict[tuple, float]:

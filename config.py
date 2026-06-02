@@ -46,6 +46,11 @@ def load_config() -> dict:
             f"Missing required environment variables: {', '.join(missing)}\n"
             "Copy .env.example to .env and fill in your credentials."
         )
+    # Regional/streaming networks the user can access (comma-separated), used to
+    # decide which games are "watchable on TV" beyond national broadcasts.
+    tv_networks = {
+        n.strip() for n in os.getenv("TV_NETWORKS", "").split(",") if n.strip()
+    }
     return {
         "balldontlie_api_key": os.getenv("BALLDONTLIE_API_KEY"),
         "odds_api_key": os.getenv("THE_ODDS_API_KEY"),
@@ -54,6 +59,7 @@ def load_config() -> dict:
         "email_to": os.getenv("EMAIL_TO", "tnelson8822@gmail.com"),
         "smtp_host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
         "smtp_port": int(os.getenv("SMTP_PORT", "587")),
+        "tv_networks": tv_networks,
     }
 
 

@@ -17,6 +17,65 @@ _SCHEDULE_CACHE: dict[str, list[dict]] = {}
 _SCHEDULE_CACHE_DATE: date | None = None
 
 
+def _parse_espn_broadcasts(comp: dict) -> list[dict]:
+    """Extract TV broadcasts from an ESPN competition dict.
+
+    Prefers the richer geoBroadcasts[] array; falls back to broadcasts[].
+    Returns [{"network": str, "market": "national"|"home"|"away"}].
+    """
+    out: list[dict] = []
+    geo = comp.get("geoBroadcasts") or []
+    for g in geo:
+        # Only TV feeds (skip Radio / Streaming-only labeled non-TV).
+        if str(g.get("type", {}).get("shortName", "")).upper() not in ("TV", ""):
+            continue
+        network = (g.get("media", {}) or {}).get("shortName", "")
+        market = str((g.get("market", {}) or {}).get("type", "")).lower()  # National/Home/Away
+        if network:
+            out.append({"network": network, "market": market or "national"})
+    if out:
+        return out
+    # Fallback: coarse broadcasts[] (names + market string).
+    for b in comp.get("broadcasts") or []:
+        market = str(b.get("market", "")).lower()
+        for name in b.get("names", []) or []:
+            if name:
+                out.append({"network": name, "market": market or "national"})
+    return out
+
+
+_NHL_MARKET_MAP = {"N": "national", "H": "home", "A": "away"}
+
+
+def _parse_nhl_broadcasts(game: dict) -> list[dict]:
+    """Extract US TV broadcasts from an NHL game dict's tvBroadcasts[]."""
+    out: list[dict] = []
+    for b in game.get("tvBroadcasts") or []:
+        if str(b.get("countryCode", "US")).upper() != "US":
+            continue
+        network = b.get("network", "")
+        market = _NHL_MARKET_MAP.get(str(b.get("market", "")).upper(), "national")
+        if network:
+            out.append({"network": network, "market": market})
+    return out
+
+
+def _parse_mlb_broadcasts(game: dict) -> list[dict]:
+    """Extract TV broadcasts from an MLB game dict's broadcasts[] (broadcasts(all) hydrate)."""
+    out: list[dict] = []
+    for b in game.get("broadcasts") or []:
+        if str(b.get("type", "")).upper() != "TV":
+            continue
+        network = b.get("name") or b.get("callSign") or ""
+        if b.get("isNational"):
+            market = "national"
+        else:
+            market = str(b.get("homeAway", "")).lower() or "home"
+        if network:
+            out.append({"network": network, "market": market})
+    return out
+
+
 def _build_nba_team_maps() -> None:
     global _TEAM_ABBR_TO_ID, _TEAM_ID_TO_ABBR
     if _TEAM_ABBR_TO_ID:
@@ -75,8 +134,59 @@ class ScheduleClient:
             games = self._try_nba_stats_scoreboard()
         if not games:
             games = self._try_espn_nba_scoreboard()
+        # The official NBA scoreboards carry no TV data — enrich from ESPN so the
+        # "Watchable on TV" view works regardless of which source succeeded.
+        if games and not any(g.get("broadcasts") for g in games):
+            self._enrich_nba_broadcasts(games)
         logger.info("Found %d NBA games today", len(games))
         return games
+
+    def _enrich_nba_broadcasts(self, games: list[dict]) -> None:
+        """Fill empty broadcasts on NBA games using the ESPN scoreboard, matched by team abbr."""
+        try:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("NBA broadcast enrichment skipped (ESPN fetch failed): %s", exc)
+            return
+
+        today_str = date.today().isoformat()
+        by_abbr: dict[str, list[dict]] = {}
+        for event in data.get("events", []):
+            if (event.get("date", "") or "")[:10] != today_str:
+                continue
+            for comp in event.get("competitions", [{}]):
+                bcasts = _parse_espn_broadcasts(comp)
+                if not bcasts:
+                    continue
+                for c in comp.get("competitors", []):
+                    raw = c.get("team", {}).get("abbreviation", "")
+                    abbr = self._ESPN_NBA_ABBR_MAP.get(raw, raw).upper()
+                    if abbr:
+                        by_abbr[abbr] = bcasts
+
+        enriched = 0
+        for g in games:
+            if g.get("broadcasts"):
+                continue
+            bcasts = (
+                by_abbr.get(g.get("home_team_abbr", "").upper())
+                or by_abbr.get(g.get("away_team_abbr", "").upper())
+                or []
+            )
+            g["broadcasts"] = bcasts
+            if bcasts:
+                enriched += 1
+
+        logger.info(
+            "NBA broadcast enrichment: %d/%d games matched to ESPN broadcast data "
+            "(ESPN abbr map has %d entries)",
+            enriched, len(games), len(by_abbr),
+        )
 
     def _try_nba_live_scoreboard(self) -> list[dict]:
         try:
@@ -106,6 +216,7 @@ class ScheduleClient:
                     "away_team_id": away_id,
                     "away_team_abbr": _TEAM_ID_TO_ABBR.get(away_id, ""),
                     "game_status": str(row.get("GAME_STATUS_TEXT", "")),
+                    "broadcasts": [],
                 })
             return results
         except Exception as exc:
@@ -136,8 +247,13 @@ class ScheduleClient:
             logger.warning("ESPN NBA scoreboard failed: %s", exc)
             return []
 
+        today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
         for event in data.get("events", []):
+            # ESPN returns a multi-day window; only keep today's games.
+            event_date = event.get("date", "")  # ISO-8601, e.g. "2025-06-01T17:00Z"
+            if event_date and event_date[:10] != today_str:
+                continue
             for comp in event.get("competitions", [{}]):
                 competitors = comp.get("competitors", [])
                 home = next((c for c in competitors if c.get("homeAway") == "home"), {})
@@ -166,9 +282,10 @@ class ScheduleClient:
                     "game_status": str(
                         event.get("status", {}).get("type", {}).get("name", "")
                     ),
+                    "broadcasts": _parse_espn_broadcasts(comp),
                 })
 
-        logger.info("ESPN NBA fallback: found %d games", len(games))
+        logger.info("ESPN NBA fallback: found %d games today", len(games))
         return games
 
     def _parse_nba_live_game(self, game: dict) -> dict | None:
@@ -185,6 +302,7 @@ class ScheduleClient:
                 "home_team_abbr": home.get("teamTricode", _TEAM_ID_TO_ABBR.get(home_id, "")),
                 "away_team_id": away_id,
                 "away_team_abbr": away.get("teamTricode", _TEAM_ID_TO_ABBR.get(away_id, "")),
+                "broadcasts": [],
                 "game_status": str(game.get("gameStatus", "")),
             }
         except Exception:
@@ -221,6 +339,7 @@ class ScheduleClient:
                     "away_team_id": int(away.get("id", 0)),
                     "away_team_abbr": away.get("abbrev", ""),
                     "game_status": str(g.get("gameState", "")),
+                    "broadcasts": _parse_nhl_broadcasts(g),
                 })
 
         logger.info("Found %d NHL games today", len(games))
@@ -242,8 +361,13 @@ class ScheduleClient:
             logger.warning("NFL schedule fetch failed: %s", exc)
             return []
 
+        today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
         for event in data.get("events", []):
+            # ESPN returns a multi-day window; only keep today's games.
+            event_date = event.get("date", "")  # ISO-8601, e.g. "2025-09-07T17:00Z"
+            if event_date and event_date[:10] != today_str:
+                continue
             for comp in event.get("competitions", [{}]):
                 competitors = comp.get("competitors", [])
                 home = next((c for c in competitors if c.get("homeAway") == "home"), {})
@@ -259,6 +383,7 @@ class ScheduleClient:
                     "away_team_id": int(away_team.get("id", 0)),
                     "away_team_abbr": away_team.get("abbreviation", ""),
                     "game_status": str(event.get("status", {}).get("type", {}).get("name", "")),
+                    "broadcasts": _parse_espn_broadcasts(comp),
                 })
 
         logger.info("Found %d NFL games today", len(games))
@@ -273,7 +398,7 @@ class ScheduleClient:
         try:
             resp = requests.get(
                 "https://statsapi.mlb.com/api/v1/schedule",
-                params={"sportId": 1, "date": today_str, "hydrate": "team"},
+                params={"sportId": 1, "date": today_str, "hydrate": "team,broadcasts(all)"},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -295,6 +420,7 @@ class ScheduleClient:
                     "away_team_id": int(away.get("id", 0)),
                     "away_team_abbr": away.get("abbreviation", ""),
                     "game_status": str(g.get("status", {}).get("abstractGameState", "")),
+                    "broadcasts": _parse_mlb_broadcasts(g),
                 })
 
         logger.info("Found %d MLB games today", len(games))

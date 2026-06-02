@@ -4,8 +4,13 @@ import logging
 import time
 from datetime import date
 
+import pandas as pd
+
 from data.base_stats_client import BaseStatsClient
+from data.game_log_archive import GameLogArchive
 from learning.history_store import HistoryStore
+
+_ARCHIVE = GameLogArchive()
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +84,13 @@ class OutcomeFetcher:
                 continue
 
             try:
-                actuals_cache[player_name] = client.get_game_stats_for_date(player_id, yesterday)
+                actuals = client.get_game_stats_for_date(player_id, yesterday)
+                actuals_cache[player_name] = actuals
+                # Persist settled actuals into the permanent archive.
+                if actuals and actuals.get("played", True):
+                    row = {k: v for k, v in actuals.items() if k != "played"}
+                    row["GAME_DATE"] = pd.Timestamp(yesterday)
+                    _ARCHIVE.merge(sport, player_id, pd.DataFrame([row]))
                 time.sleep(0.4)
             except Exception as exc:
                 logger.warning("Failed to fetch actuals for %s (%s): %s", player_name, sport, exc)
