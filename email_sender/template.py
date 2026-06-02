@@ -119,7 +119,7 @@ def render_yesterday_section(
 
 
 def _render_sport_sections(results_by_sport: dict) -> str:
-    """Render per-sport headers + pick tables for a results dict."""
+    """Render per-sport headers + pick tables, with A-tier callout when present."""
     from config import SPORT_CONFIG
     html = ""
     for sport_name, sport_results in results_by_sport.items():
@@ -132,7 +132,27 @@ def _render_sport_sections(results_by_sport: dict) -> str:
   <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
     {emoji} {full_name}
   </div>"""
-        html += _render_picks_table(sport_results[:10])
+
+        a_tier = [r for r in sport_results[:10] if getattr(r, "tier", "speculative") == "A"]
+        spec   = [r for r in sport_results[:10] if getattr(r, "tier", "speculative") != "A"]
+
+        if a_tier:
+            html += """
+  <div style="padding:6px 20px 2px;background:#1a7a3c;color:#fff;font-size:12px;font-weight:bold">
+    &#11088; A-Tier — High Confidence (edge-cleared)
+  </div>"""
+            html += _render_picks_table(a_tier)
+        if spec:
+            if a_tier:
+                html += """
+  <div style="padding:6px 20px 2px;background:#5a6a8a;color:#fff;font-size:12px">
+    Speculative Picks
+  </div>"""
+            html += _render_picks_table(spec)
+        if not a_tier and not spec:
+            html += """
+  <div style="padding:8px 20px;font-size:12px;color:#888">No picks available.</div>"""
+
         html += '<div style="margin-bottom:12px"></div>'
     return html
 
@@ -153,7 +173,8 @@ def render_email_html(
     all_results = [r for sport_results in results_by_sport.values() for r in sport_results]
     all_results.sort(key=lambda r: r.hit_probability, reverse=True)
 
-    high_conf = [r for r in all_results if r.hit_probability > 65]
+    a_tier_picks = [r for r in all_results if getattr(r, "tier", "speculative") == "A"]
+    high_conf = a_tier_picks  # reuse variable for header stat
     date_str = run_date.strftime("%B %d, %Y")
     top_5 = all_results[:5]
 
@@ -249,7 +270,7 @@ def render_email_html(
     <h1>Multi-Sport Prop Picks &mdash; {date_str}</h1>
     <div class="meta">
       <span>&#127919; {total_props} Picks</span>
-      <span>&#128994; {len(high_conf)} High Confidence (&gt;65%)</span>
+      <span>&#11088; {len(high_conf)} A-Tier (edge&ge;6%)</span>
       <span>&#127931; {n_sports} Sport{"s" if n_sports != 1 else ""} Active</span>
       <span>&#9201; {duration_secs:.0f}s runtime</span>
     </div>
@@ -300,7 +321,7 @@ def _render_picks_table(picks: list) -> str:
       <tr>
         <th>#</th><th>Player</th><th>Team</th><th>TV</th><th>Direction</th>
         <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
-        <th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
+        <th>Edge</th><th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
       </tr>
     </thead>
     <tbody>
@@ -328,9 +349,14 @@ def _render_row(r: PropResult) -> str:
         dq_badge = '<span class="dq-badge">minimal data</span>'
 
     tv_label = getattr(r, "broadcast_label", "") or "&mdash;"
+    edge_val = getattr(r, "edge", 0.0)
+    tier_val = getattr(r, "tier", "speculative")
+    edge_label = f"+{edge_val*100:.1f}pp" if edge_val >= 0 else f"{edge_val*100:.1f}pp"
+    edge_color = "#1a7a3c" if tier_val == "A" else "#888"
+    tier_badge = " &#11088;" if tier_val == "A" else ""
 
     return f"""      <tr class="{cc}">
-        <td><strong>{r.rank}</strong></td>
+        <td><strong>{r.rank}</strong>{tier_badge}</td>
         <td><strong>{r.player_name}</strong><br><span style="font-size:11px;color:#888">{r.position}</span></td>
         <td>{r.team_abbr}</td>
         <td style="font-size:11px;color:#555">{tv_label}</td>
@@ -339,6 +365,7 @@ def _render_row(r: PropResult) -> str:
         <td style="font-weight:bold">{r.line}</td>
         <td class="{pred_cls}">{r.predicted_value:.1f}</td>
         <td><span class="badge {cc}">{r.hit_probability:.0f}%</span></td>
+        <td style="font-size:11px;color:{edge_color};font-weight:bold">{edge_label}</td>
         <td>{r.hit_rate_20:.0%} ({r.games_analyzed}G)</td>
         <td style="font-size:11.5px">{h2h_text}</td>
         <td>{pills}{dq_badge}</td>
@@ -346,23 +373,38 @@ def _render_row(r: PropResult) -> str:
 
 
 def _plain_sport_blocks(results_by_sport: dict) -> list[str]:
-    """Render plain-text per-sport top-10 blocks."""
+    """Render plain-text per-sport top-10 blocks with A-tier callout."""
     out: list[str] = []
     for sport_name, sport_results in results_by_sport.items():
         if not sport_results:
             continue
         out.append(f"── {sport_name} — TOP 10 PICKS ──")
-        for r in sport_results[:10]:
-            dir_label = "OVER " if r.direction == "OVER" else "UNDER"
-            tv = getattr(r, "broadcast_label", "") or "-"
-            out.append(
-                f"{r.rank:>3}. {r.player_name:<22} "
-                f"{dir_label} {r.stat_type:<14} Line:{r.line:<6} "
-                f"Prob:{r.hit_probability:.0f}%  "
-                f"Pred:{r.predicted_value:.1f}  TV:{tv}"
-            )
+        a_tier = [r for r in sport_results[:10] if getattr(r, "tier", "") == "A"]
+        spec   = [r for r in sport_results[:10] if getattr(r, "tier", "") != "A"]
+        if a_tier:
+            out.append("  ★ A-TIER (High Confidence):")
+            for r in a_tier:
+                _plain_row(r, out)
+        if spec:
+            if a_tier:
+                out.append("  Speculative:")
+            for r in spec:
+                _plain_row(r, out)
         out.append("")
     return out
+
+
+def _plain_row(r: PropResult, out: list[str]) -> None:
+    dir_label = "OVER " if r.direction == "OVER" else "UNDER"
+    tv = getattr(r, "broadcast_label", "") or "-"
+    edge_val = getattr(r, "edge", 0.0)
+    edge_str = f"+{edge_val*100:.1f}pp" if edge_val >= 0 else f"{edge_val*100:.1f}pp"
+    out.append(
+        f"{r.rank:>3}. {r.player_name:<22} "
+        f"{dir_label} {r.stat_type:<14} Line:{r.line:<6} "
+        f"Prob:{r.hit_probability:.0f}%  Edge:{edge_str}  "
+        f"Pred:{r.predicted_value:.1f}  TV:{tv}"
+    )
 
 
 def render_plain_text(

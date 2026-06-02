@@ -488,3 +488,14 @@ SPORT_CONFIG: dict[str, dict] = {
         "dk_event_group_id": 40625,
     },
 }
+
+# ── Accuracy-improvement feature flags (Phase 1-4) ──────────────────────────
+# Phase 2: market odds blend
+MARKET_BLEND_WEIGHT = 0.40          # weight given to devigged sportsbook prob (0=model only)
+MARKET_ODDS_MAX_REQUESTS_PER_RUN = 30  # hard cap to protect the free-tier quota
+
+# Phase 3: edge + tiering
+PRIZEPICKS_BREAKEVEN = 0.54         # 6-pick flex break-even per leg
+A_TIER_MIN_PROB = 60.0              # minimum hit_probability (%) to qualify for A-tier
+A_TIER_MIN_EDGE = 0.06              # minimum edge above break-even to qualify
+MIN_GAMES_FOR_A_TIER = 8            # minimum games_analyzed for A-tier eligibility

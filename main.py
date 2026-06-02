@@ -28,7 +28,7 @@ from data.nba_stats_client import NBAStatsClient
 from data.nhl_stats_client import NHLStatsClient
 from data.mlb_stats_client import MLBStatsClient
 from data.nfl_stats_client import NFLStatsClient
-from analysis.prop_analyzer import PropAnalyzer, PropResult
+from analysis.prop_analyzer import PropAnalyzer, PropResult, rank_and_tier
 from analysis.watchability import is_watchable
 from learning.history_store import HistoryStore
 from learning.outcome_fetcher import OutcomeFetcher
@@ -59,11 +59,12 @@ def setup_logging() -> None:
 
 
 def _top_picks(results: list, n: int = 10) -> list:
-    """Return top-n picks by hit_probability regardless of direction."""
-    top = sorted(results, key=lambda r: r.hit_probability, reverse=True)[:n]
-    for i, r in enumerate(top, 1):
+    """Return top-n picks using the canonical tier-aware sort (A-tier first by edge,
+    then speculative by hit_probability).  Assigns rank 1..n on the trimmed list."""
+    ranked = rank_and_tier(results)[:n]
+    for i, r in enumerate(ranked, 1):
         r.rank = i
-    return top
+    return ranked
 
 
 def _build_stats_clients(cfg: dict) -> dict:
