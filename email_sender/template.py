@@ -235,22 +235,22 @@ def render_email_html(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Prop Picks – {date_str}</title>
 <style>
-  body {{ margin: 0; padding: 0; background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; font-size: 13px; }}
-  .wrap {{ max-width: 980px; margin: 20px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
+  body {{ margin: 0; padding: 0; background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; font-size: 12px; }}
+  .wrap {{ max-width: 1200px; margin: 20px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
   .header {{ background: #1a2a5e; color: #fff; padding: 22px 26px; }}
   .header h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }}
   .header .meta {{ font-size: 12px; opacity: .8; }}
   .header .meta span {{ margin-right: 18px; }}
-  .topbox {{ background: #eef2ff; border-left: 4px solid #1a2a5e; padding: 12px 20px; font-size: 12.5px; line-height: 1.8; }}
+  .topbox {{ background: #eef2ff; border-left: 4px solid #1a2a5e; padding: 12px 20px; font-size: 12px; line-height: 1.8; }}
   .topbox strong {{ color: #1a2a5e; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ background: #2c3e7a; color: #fff; padding: 9px 10px; text-align: left; font-size: 12px; white-space: nowrap; }}
-  td {{ padding: 8px 10px; vertical-align: top; border-bottom: 1px solid #eee; }}
+  table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+  th {{ background: #2c3e7a; color: #fff; padding: 6px 7px; text-align: left; font-size: 11px; white-space: nowrap; overflow: hidden; }}
+  td {{ padding: 6px 7px; vertical-align: top; border-bottom: 1px solid #eee; font-size: 11.5px; overflow: hidden; }}
   tr:nth-child(even) td {{ background: #f8f9fb; }}
   .high {{ background: #d4f0da !important; }}
   .med  {{ background: #fff9e6 !important; }}
   .low  {{ background: #f8f9fa !important; }}
-  .badge {{ display: inline-block; border-radius: 12px; padding: 3px 9px; font-weight: bold; font-size: 13px; }}
+  .badge {{ display: inline-block; border-radius: 12px; padding: 2px 7px; font-weight: bold; font-size: 11.5px; }}
   .badge.high {{ background: #28a745; color: #fff; }}
   .badge.med  {{ background: #ffc107; color: #333; }}
   .badge.low  {{ background: #adb5bd; color: #fff; }}
@@ -258,8 +258,8 @@ def render_email_html(
   .dir-under {{ color: #e67e22; font-weight: bold; }}
   .pred-up   {{ color: #28a745; font-weight: bold; }}
   .pred-down {{ color: #dc3545; font-weight: bold; }}
-  .pill {{ display: inline-block; background: #e9ecef; border-radius: 6px; padding: 1px 7px; font-size: 10.5px; margin: 1px 2px; white-space: nowrap; }}
-  .dq-badge {{ display: inline-block; background: #ffe08a; border-radius: 4px; padding: 1px 5px; font-size: 10px; color: #856404; margin-left: 4px; }}
+  .pill {{ display: inline-block; background: #e9ecef; border-radius: 6px; padding: 1px 5px; font-size: 10px; margin: 1px 2px; white-space: nowrap; }}
+  .dq-badge {{ display: inline-block; background: #ffe08a; border-radius: 4px; padding: 1px 4px; font-size: 10px; color: #856404; margin-left: 3px; }}
   .footer {{ background: #f0f2f5; padding: 14px 20px; font-size: 10.5px; color: #888; line-height: 1.6; }}
 </style>
 </head>
@@ -316,12 +316,25 @@ def _render_picks_table(picks: list) -> str:
         return ""
     rows = "\n".join(_render_row(r) for r in picks)
     return f"""
-  <table style="width:100%;border-collapse:collapse;margin-bottom:4px">
+  <table style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
+    <colgroup>
+      <col style="width:3%">   <!-- # -->
+      <col style="width:15%">  <!-- Player -->
+      <col style="width:8%">   <!-- Team/TV -->
+      <col style="width:6%">   <!-- Direction -->
+      <col style="width:12%">  <!-- Prop -->
+      <col style="width:5%">   <!-- Line -->
+      <col style="width:6%">   <!-- Predicted -->
+      <col style="width:7%">   <!-- Probability -->
+      <col style="width:6%">   <!-- Edge -->
+      <col style="width:7%">   <!-- Hit Rate -->
+      <col style="width:25%">  <!-- Key Factors + H2H -->
+    </colgroup>
     <thead>
       <tr>
-        <th>#</th><th>Player</th><th>Team</th><th>TV</th><th>Direction</th>
-        <th>Prop</th><th>Line</th><th>Predicted</th><th>Probability</th>
-        <th>Edge</th><th>20G Hit Rate</th><th>H2H (this season)</th><th>Key Factors</th>
+        <th>#</th><th>Player</th><th>Team / TV</th><th>Dir</th>
+        <th>Prop</th><th>Line</th><th>Pred</th><th>Prob</th>
+        <th>Edge</th><th>Hit Rate</th><th>Key Factors &amp; H2H</th>
       </tr>
     </thead>
     <tbody>
@@ -348,27 +361,35 @@ def _render_row(r: PropResult) -> str:
     elif r.data_quality == "minimal":
         dq_badge = '<span class="dq-badge">minimal data</span>'
 
-    tv_label = getattr(r, "broadcast_label", "") or "&mdash;"
+    tv_label = getattr(r, "broadcast_label", "") or ""
     edge_val = getattr(r, "edge", 0.0)
     tier_val = getattr(r, "tier", "speculative")
     edge_label = f"+{edge_val*100:.1f}pp" if edge_val >= 0 else f"{edge_val*100:.1f}pp"
     edge_color = "#1a7a3c" if tier_val == "A" else "#888"
     tier_badge = " &#11088;" if tier_val == "A" else ""
 
+    # Team cell: abbr + TV network on second line (if available)
+    tv_sub = f'<br><span style="font-size:10px;color:#1a7a3c">{tv_label}</span>' if tv_label else ""
+    team_cell = f"{r.team_abbr}{tv_sub}"
+
+    # Key factors cell: pills + H2H + data-quality badge combined
+    h2h_inline = ""
+    if r.h2h_sample_size >= 2:
+        h2h_inline = f'<br><span style="font-size:10px;color:#555">H2H: {h2h_text}</span>'
+    factors_cell = f"{pills}{dq_badge}{h2h_inline}"
+
     return f"""      <tr class="{cc}">
         <td><strong>{r.rank}</strong>{tier_badge}</td>
-        <td><strong>{r.player_name}</strong><br><span style="font-size:11px;color:#888">{r.position}</span></td>
-        <td>{r.team_abbr}</td>
-        <td style="font-size:11px;color:#555">{tv_label}</td>
+        <td style="word-break:break-word"><strong>{r.player_name}</strong><br><span style="font-size:10px;color:#888">{r.position}</span></td>
+        <td>{team_cell}</td>
         <td><span class="{dir_cls}">{r.direction}</span></td>
-        <td>{r.stat_type}</td>
+        <td style="word-break:break-word">{r.stat_type}</td>
         <td style="font-weight:bold">{r.line}</td>
         <td class="{pred_cls}">{r.predicted_value:.1f}</td>
         <td><span class="badge {cc}">{r.hit_probability:.0f}%</span></td>
-        <td style="font-size:11px;color:{edge_color};font-weight:bold">{edge_label}</td>
-        <td>{r.hit_rate_20:.0%} ({r.games_analyzed}G)</td>
-        <td style="font-size:11.5px">{h2h_text}</td>
-        <td>{pills}{dq_badge}</td>
+        <td style="color:{edge_color};font-weight:bold">{edge_label}</td>
+        <td>{r.hit_rate_20:.0%}&nbsp;({r.games_analyzed}G)</td>
+        <td>{factors_cell}</td>
       </tr>"""
 
 
