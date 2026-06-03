@@ -58,6 +58,36 @@ def setup_logging() -> None:
     root.addHandler(stream_handler)
 
 
+def _infer_games_from_props(props: list[dict]) -> list[dict]:
+    """Build minimal placeholder game dicts from props' team_abbr values.
+
+    Used when all schedule APIs are unavailable.  Pairs consecutive unique teams
+    so _determine_game_context can match each player to a game entry.  Opponent
+    IDs will be 0 for unpaired odd-teams, meaning the opponent-defense factor
+    returns 0 for those players — all other factors still work normally.
+    """
+    from data.schedule_client import _TEAM_ABBR_TO_ID
+    seen: list[str] = []
+    for p in props:
+        abbr = str(p.get("team_abbr", "")).upper()
+        if abbr and abbr not in seen:
+            seen.append(abbr)
+    games: list[dict] = []
+    for i in range(0, len(seen), 2):
+        home = seen[i]
+        away = seen[i + 1] if i + 1 < len(seen) else ""
+        games.append({
+            "game_id": f"inferred_{home}_{away or 'UNK'}",
+            "home_team_id": _TEAM_ABBR_TO_ID.get(home, 0),
+            "home_team_abbr": home,
+            "away_team_id": _TEAM_ABBR_TO_ID.get(away, 0),
+            "away_team_abbr": away,
+            "game_status": "inferred_from_props",
+            "broadcasts": [],
+        })
+    return games
+
+
 def _top_picks(results: list, n: int = 10) -> list:
     """Return top-n picks using the canonical tier-aware sort (A-tier first by edge,
     then speculative by hit_probability).  Assigns rank 1..n on the trimmed list."""
@@ -155,15 +185,35 @@ def main() -> int:
 
         # Check for games today (via schedule)
         games = schedule.get_todays_games(sport_key=sport_cfg["odds_sport_key"])
+        preloaded_props: list | None = None
+
         if not games:
-            logger.info("No %s games today — skipping", sport_name)
-            continue
+            # All schedule APIs down — try fetching props before giving up.
+            # If there are real props, infer game context from team abbreviations
+            # so analysis can proceed even without a schedule source.
+            preloaded_props = odds_client.fetch_props(sport_cfg)
+            if not preloaded_props:
+                logger.info("No %s games today — skipping", sport_name)
+                continue
+            games = _infer_games_from_props(preloaded_props)
+            if not games:
+                logger.info("No %s games today — skipping", sport_name)
+                continue
+            # Inject inferred games into the schedule cache so PropAnalyzer
+            # sees them when it calls schedule.get_todays_games internally.
+            from data import schedule_client as _sc
+            _sc._SCHEDULE_CACHE[sport_cfg["odds_sport_key"]] = games
+            logger.warning(
+                "%s: schedule APIs unavailable — inferred %d game(s) from props. "
+                "Analysis proceeds without opponent-defense context.",
+                sport_name, len(games),
+            )
 
         any_games = True
         logger.info("Games today (%s): %d", sport_name, len(games))
 
-        # Fetch props
-        props = odds_client.fetch_props(sport_cfg)
+        # Fetch props (skip if already loaded during schedule fallback)
+        props = preloaded_props if preloaded_props is not None else odds_client.fetch_props(sport_cfg)
         if not props:
             logger.warning(
                 "No %s props loaded — PrizePicks API unavailable and props.json is empty. "
