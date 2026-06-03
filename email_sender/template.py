@@ -244,8 +244,8 @@ def render_email_html(
   .topbox {{ background: #eef2ff; border-left: 4px solid #1a2a5e; padding: 12px 20px; font-size: 12px; line-height: 1.8; }}
   .topbox strong {{ color: #1a2a5e; }}
   table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
-  th {{ background: #2c3e7a; color: #fff; padding: 6px 7px; text-align: left; font-size: 11px; white-space: nowrap; overflow: hidden; }}
-  td {{ padding: 6px 7px; vertical-align: top; border-bottom: 1px solid #eee; font-size: 11.5px; overflow: hidden; }}
+  th {{ background: #2c3e7a; color: #fff; padding: 5px 5px; text-align: left; font-size: 10.5px; word-break: break-word; overflow: hidden; }}
+  td {{ padding: 5px 5px; vertical-align: top; border-bottom: 1px solid #eee; font-size: 11px; overflow: hidden; word-break: break-word; }}
   tr:nth-child(even) td {{ background: #f8f9fb; }}
   .high {{ background: #d4f0da !important; }}
   .med  {{ background: #fff9e6 !important; }}
@@ -315,26 +315,24 @@ def _render_picks_table(picks: list) -> str:
     if not picks:
         return ""
     rows = "\n".join(_render_row(r) for r in picks)
+    # width="" attributes on <th> are respected by Gmail/Outlook where colgroup/table-layout:fixed is ignored.
+    # Total budget ~1160px (1200px container minus 40px side padding).
+    # Columns: 28+140+75+48+100+42+50+58+52+75+rest(~492)
     return f"""
-  <table style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
-    <colgroup>
-      <col style="width:3%">   <!-- # -->
-      <col style="width:15%">  <!-- Player -->
-      <col style="width:8%">   <!-- Team/TV -->
-      <col style="width:6%">   <!-- Direction -->
-      <col style="width:12%">  <!-- Prop -->
-      <col style="width:5%">   <!-- Line -->
-      <col style="width:6%">   <!-- Predicted -->
-      <col style="width:7%">   <!-- Probability -->
-      <col style="width:6%">   <!-- Edge -->
-      <col style="width:7%">   <!-- Hit Rate -->
-      <col style="width:25%">  <!-- Key Factors + H2H -->
-    </colgroup>
+  <table width="100%" style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
     <thead>
       <tr>
-        <th>#</th><th>Player</th><th>Team / TV</th><th>Dir</th>
-        <th>Prop</th><th>Line</th><th>Pred</th><th>Prob</th>
-        <th>Edge</th><th>Hit Rate</th><th>Key Factors &amp; H2H</th>
+        <th width="28">#</th>
+        <th width="140">Player</th>
+        <th width="75">Team&nbsp;/&nbsp;TV</th>
+        <th width="48">Dir</th>
+        <th width="100">Prop</th>
+        <th width="42">Line</th>
+        <th width="50">Pred</th>
+        <th width="58">Prob</th>
+        <th width="52">Edge</th>
+        <th width="75">Hit&nbsp;Rate</th>
+        <th>Key Factors &amp; H2H</th>
       </tr>
     </thead>
     <tbody>
@@ -379,16 +377,16 @@ def _render_row(r: PropResult) -> str:
     factors_cell = f"{pills}{dq_badge}{h2h_inline}"
 
     return f"""      <tr class="{cc}">
-        <td><strong>{r.rank}</strong>{tier_badge}</td>
-        <td style="word-break:break-word"><strong>{r.player_name}</strong><br><span style="font-size:10px;color:#888">{r.position}</span></td>
-        <td>{team_cell}</td>
-        <td><span class="{dir_cls}">{r.direction}</span></td>
-        <td style="word-break:break-word">{r.stat_type}</td>
-        <td style="font-weight:bold">{r.line}</td>
-        <td class="{pred_cls}">{r.predicted_value:.1f}</td>
-        <td><span class="badge {cc}">{r.hit_probability:.0f}%</span></td>
-        <td style="color:{edge_color};font-weight:bold">{edge_label}</td>
-        <td>{r.hit_rate_20:.0%}&nbsp;({r.games_analyzed}G)</td>
+        <td width="28"><strong>{r.rank}</strong>{tier_badge}</td>
+        <td width="140"><strong>{r.player_name}</strong><br><span style="font-size:10px;color:#888">{r.position}</span></td>
+        <td width="75">{team_cell}</td>
+        <td width="48"><span class="{dir_cls}">{r.direction}</span></td>
+        <td width="100">{r.stat_type}</td>
+        <td width="42" style="font-weight:bold">{r.line}</td>
+        <td width="50" class="{pred_cls}">{r.predicted_value:.1f}</td>
+        <td width="58"><span class="badge {cc}">{r.hit_probability:.0f}%</span></td>
+        <td width="52" style="color:{edge_color};font-weight:bold">{edge_label}</td>
+        <td width="75">{r.hit_rate_20:.0%}&nbsp;({r.games_analyzed}G)</td>
         <td>{factors_cell}</td>
       </tr>"""
 
