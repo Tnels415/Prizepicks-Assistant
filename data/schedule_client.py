@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timezone, timedelta
 
 from nba_api.stats.static import teams as nba_teams_static
@@ -76,6 +77,22 @@ def _parse_mlb_broadcasts(game: dict) -> list[dict]:
     return out
 
 
+# Odds API returns full team names; map them to standard NBA abbreviations.
+_TEAM_NAME_TO_ABBR: dict[str, str] = {
+    "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+    "LA Clippers": "LAC", "Los Angeles Clippers": "LAC", "Los Angeles Lakers": "LAL",
+    "Memphis Grizzlies": "MEM", "Miami Heat": "MIA", "Milwaukee Bucks": "MIL",
+    "Minnesota Timberwolves": "MIN", "New Orleans Pelicans": "NOP", "New York Knicks": "NYK",
+    "Oklahoma City Thunder": "OKC", "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI",
+    "Phoenix Suns": "PHX", "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC",
+    "San Antonio Spurs": "SAS", "Toronto Raptors": "TOR", "Utah Jazz": "UTA",
+    "Washington Wizards": "WAS",
+}
+
+
 def _build_nba_team_maps() -> None:
     global _TEAM_ABBR_TO_ID, _TEAM_ID_TO_ABBR
     if _TEAM_ABBR_TO_ID:
@@ -134,6 +151,10 @@ class ScheduleClient:
             games = self._try_nba_stats_scoreboard()
         if not games:
             games = self._try_espn_nba_scoreboard()
+        if not games:
+            games = self._try_odds_api_nba_events()
+        if not games:
+            games = self._infer_nba_games_from_props_json()
         # The official NBA scoreboards carry no TV data — enrich from ESPN so the
         # "Watchable on TV" view works regardless of which source succeeded.
         if games and not any(g.get("broadcasts") for g in games):
@@ -286,6 +307,124 @@ class ScheduleClient:
                 })
 
         logger.info("ESPN NBA fallback: found %d games today", len(games))
+        return games
+
+    def _try_odds_api_nba_events(self) -> list[dict]:
+        """Odds API v4 events endpoint — last-resort fallback when all other NBA
+        schedule sources are unavailable (e.g. ESPN 403, stats.nba.com down).
+        Returns minimal game dicts (no team IDs — stat lookups will still work
+        via player-name matching in the analyzer).
+        """
+        # Use load_config() so the key is resolved from .env just like other clients.
+        try:
+            from config import load_config
+            api_key = load_config().get("odds_api_key") or os.environ.get("THE_ODDS_API_KEY", "")
+        except Exception:
+            api_key = os.environ.get("THE_ODDS_API_KEY", "")
+        if not api_key:
+            logger.debug("Odds API key not set — skipping Odds API NBA events fallback")
+            return []
+        try:
+            resp = requests.get(
+                "https://api.the-odds-api.com/v4/sports/basketball_nba/events",
+                params={"apiKey": api_key, "dateFormat": "iso"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            events = resp.json()
+        except Exception as exc:
+            logger.warning("Odds API NBA events fallback failed: %s", exc)
+            return []
+
+        today_str = date.today().isoformat()
+        games = []
+        for ev in events:
+            # commence_time is ISO-8601; filter to today (UTC date may differ near midnight)
+            ct = ev.get("commence_time", "")
+            if not ct or ct[:10] != today_str:
+                continue
+            home_raw = ev.get("home_team", "")
+            away_raw = ev.get("away_team", "")
+            # Map full team names to abbreviations via existing map
+            home_abbr = _TEAM_NAME_TO_ABBR.get(home_raw, home_raw[:3].upper())
+            away_abbr = _TEAM_NAME_TO_ABBR.get(away_raw, away_raw[:3].upper())
+            home_id = _TEAM_ABBR_TO_ID.get(home_abbr, 0)
+            away_id = _TEAM_ABBR_TO_ID.get(away_abbr, 0)
+            games.append({
+                "game_id": str(ev.get("id", "")),
+                "home_team_id": home_id,
+                "home_team_abbr": home_abbr,
+                "away_team_id": away_id,
+                "away_team_abbr": away_abbr,
+                "game_status": "scheduled",
+                "broadcasts": [],
+            })
+
+        logger.info("Odds API NBA events fallback: found %d games today", len(games))
+        return games
+
+    def _infer_nba_games_from_props_json(self) -> list[dict]:
+        """Absolute last resort: read team abbreviations from props.json and create
+        placeholder game entries so the analyzer can proceed when all schedule APIs
+        are unavailable (e.g. blocked network or post-season API changes).
+
+        Pairs teams by splitting the unique set into pairs (works cleanly for
+        2-team playoff matchups; for multi-game nights each unique team gets a
+        entry so _determine_game_context can find it).
+        """
+        import json
+        from pathlib import Path
+
+        props_file = Path("props.json")
+        if not props_file.exists():
+            return []
+        try:
+            raw = json.loads(props_file.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        if not isinstance(raw, list):
+            return []
+
+        # Collect unique NBA team abbreviations from non-template entries.
+        template_names = {"Jayson Tatum", "Connor McDavid", "Shohei Ohtani"}
+        nba_teams: list[str] = []
+        for entry in raw:
+            if str(entry.get("sport", "")).upper() != "NBA":
+                continue
+            if entry.get("player_name") in template_names:
+                continue
+            abbr = str(entry.get("team_abbr", "")).upper()
+            if abbr and abbr not in nba_teams:
+                nba_teams.append(abbr)
+
+        if not nba_teams:
+            logger.debug("props.json has no real NBA entries — cannot infer games")
+            return []
+
+        # Pair teams: [A, B, C, D] → (A,B), (C,D); odd team gets empty opponent.
+        games: list[dict] = []
+        for i in range(0, len(nba_teams), 2):
+            home = nba_teams[i]
+            away = nba_teams[i + 1] if i + 1 < len(nba_teams) else ""
+            home_id = _TEAM_ABBR_TO_ID.get(home, 0)
+            away_id = _TEAM_ABBR_TO_ID.get(away, 0) if away else 0
+            games.append({
+                "game_id": f"inferred_{home}_{away}",
+                "home_team_id": home_id,
+                "home_team_abbr": home,
+                "away_team_id": away_id,
+                "away_team_abbr": away,
+                "game_status": "inferred_from_props",
+                "broadcasts": [],
+            })
+
+        logger.warning(
+            "All NBA schedule APIs unavailable — inferred %d game(s) from props.json "
+            "team abbreviations (%s). Opponent-defense factor will be 0 for inferred "
+            "matchups. Fill props.json with real PrizePicks lines.",
+            len(games), ", ".join(nba_teams),
+        )
         return games
 
     def _parse_nba_live_game(self, game: dict) -> dict | None:
