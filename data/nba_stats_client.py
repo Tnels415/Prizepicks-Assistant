@@ -239,6 +239,7 @@ class NBAStatsClient:
         # 2. ESPN unofficial API — fast, free, no auth; used as primary live source.
         #    nba_api (stats.nba.com) is used as a supplement only when ESPN fails,
         #    because stats.nba.com periodically rate-limits or hangs.
+        df: pd.DataFrame | None = None
         if not _ESPN_UNAVAILABLE:
             player_name = self._id_to_name.get(player_id, "")
             if player_name:
