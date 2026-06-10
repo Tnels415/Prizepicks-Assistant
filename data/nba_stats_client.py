@@ -239,7 +239,7 @@ class NBAStatsClient:
         # 2. ESPN unofficial API — fast, free, no auth; used as primary live source.
         #    nba_api (stats.nba.com) is used as a supplement only when ESPN fails,
         #    because stats.nba.com periodically rate-limits or hangs.
-        df: pd.DataFrame | None = None
+        df: pd.DataFrame | None = None  # always initialized so fallback checks never raise UnboundLocalError
         if not _ESPN_UNAVAILABLE:
             player_name = self._id_to_name.get(player_id, "")
             if player_name:
@@ -249,26 +249,25 @@ class NBAStatsClient:
         if (df is None or df.empty) and not _NBA_API_UNAVAILABLE and not _nba_api_is_cooling_down():
             df = self._fetch_game_log_nba_api(player_id)
 
+        # 4. BallDontLie fallback — if both ESPN and nba_api failed.
         if df is None or df.empty:
-            # Look up the original search name so BallDontLie can find its own ID.
             player_name = self._id_to_name.get(player_id, "")
             df = self._fetch_game_log_bdl(player_id, player_name)
 
-        # 3. On success, persist to disk cache and archive.
+        # 5. On success, persist to disk cache and archive.
         if df is not None and not df.empty:
             df = self._add_derived_columns(df)
             _GAME_LOG_CACHE.set("NBA", player_id, df)
             _ARCHIVE.merge("NBA", player_id, df)
         else:
-            # 4. Both live sources failed — try stale cache (< 7 days old).
+            # 6. All live sources failed — try stale cache (< 7 days old).
             stale = _GAME_LOG_CACHE.get_stale("NBA", player_id)
-            if stale is not None:
-                df = stale
-            else:
-                df = pd.DataFrame()
+            df = stale if stale is not None else pd.DataFrame()
 
-        # 5. Merge with permanent archive so the analyzer sees full multi-season history.
+        # 7. Merge with permanent archive so the analyzer sees full multi-season history.
         df = _merge_with_archive("NBA", player_id, df)
+        if df is None:
+            df = pd.DataFrame()
 
         _PLAYER_CACHE[player_id] = df
         return df
@@ -716,9 +715,10 @@ class NBAStatsClient:
         _GAME_LOG_CACHE.invalidate("NBA", player_id)
         if player_id in _PLAYER_CACHE:
             del _PLAYER_CACHE[player_id]
+        df: pd.DataFrame | None = None
         try:
             df = self.get_player_game_log(player_id)
-            if df.empty or "GAME_DATE" not in df.columns:
+            if df is None or df.empty or "GAME_DATE" not in df.columns:
                 return {"played": False}
             mask = df["GAME_DATE"].dt.date == game_date
             rows = df[mask]
@@ -734,7 +734,10 @@ class NBAStatsClient:
             stats["played"] = True
             return stats
         except Exception as exc:
-            logger.warning("get_game_stats_for_date failed for NBA player %d: %s", player_id, exc)
+            logger.warning(
+                "get_game_stats_for_date failed for NBA player %d (df=%s): %s",
+                player_id, type(df).__name__, exc,
+            )
             return None
 
     # -------------------------------------------------------------------------
