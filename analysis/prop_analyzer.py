@@ -606,7 +606,15 @@ class PropAnalyzer:
                 f"({h2h['hit_rate']:.0%})"
             )
 
-        sorted_adj = sorted(adjustments.items(), key=lambda x: abs(x[1]), reverse=True)
+        # Only real factor adjustments are eligible for the "key factors" display.
+        # Diagnostic entries are excluded: underscore-prefixed keys (_dist_over,
+        # _market_over) are model internals, and any None value means the factor
+        # was not computed — both would break the abs()-based sort below.
+        scored_adj = [
+            (k, v) for k, v in adjustments.items()
+            if not k.startswith("_") and v is not None
+        ]
+        sorted_adj = sorted(scored_adj, key=lambda x: abs(x[1]), reverse=True)
         for key, val in sorted_adj[:2]:
             if abs(val) < 0.5:
                 continue
