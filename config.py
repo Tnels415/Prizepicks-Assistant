@@ -494,8 +494,18 @@ SPORT_CONFIG: dict[str, dict] = {
 MARKET_BLEND_WEIGHT = 0.40          # weight given to devigged sportsbook prob (0=model only)
 MARKET_ODDS_MAX_REQUESTS_PER_RUN = 30  # hard cap to protect the free-tier quota
 
+# Injury tiering — confidence shrink applied to players who carry a designation
+# but are still expected to play (see analysis/prop_analyzer.py). Fraction of
+# the distance to 50% removed: 0.30 means a 70% pick becomes 64%.
+INJURY_QUESTIONABLE_SHRINK = 0.30
+INJURY_PROBABLE_SHRINK = 0.10
+
 # Phase 3: edge + tiering
-PRIZEPICKS_BREAKEVEN = 0.54         # 6-pick flex break-even per leg
+# PrizePicks break-even per leg depends on entry type. Public no-vig analysis
+# puts 5-/6-leg flex break-even near ~52% (and correlated legs lower it further),
+# while 2-/3-pick power plays need ~57%+. 0.54 is a conservative middle value
+# tuned for the recommended 5-/6-leg flex entries.
+PRIZEPICKS_BREAKEVEN = 0.54         # per-leg flex break-even (5-/6-leg flex)
 A_TIER_MIN_PROB = 60.0              # minimum hit_probability (%) to qualify for A-tier
 A_TIER_MIN_EDGE = 0.06              # minimum edge above break-even to qualify
 MIN_GAMES_FOR_A_TIER = 8            # minimum games_analyzed for A-tier eligibility

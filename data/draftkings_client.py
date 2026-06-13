@@ -99,6 +99,26 @@ _DK_HEADER_VARIANTS = [
 _DK_BASE = "https://sportsbook.draftkings.com/sites/US-SB/api/v5"
 
 
+def _normalize_name(name: str) -> str:
+    """Normalize a player name for cross-source matching (DK ↔ PrizePicks).
+
+    Lowercases, strips punctuation and common suffixes so "Luka Dončić",
+    "Luka Doncic" and "P.J. Washington Jr." line up across providers.
+    """
+    import unicodedata
+
+    n = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    n = n.lower()
+    # Delete intra-word punctuation ("p.j." → "pj"); split the rest on spaces.
+    for ch in (".", "'"):
+        n = n.replace(ch, "")
+    for ch in (",", "-"):
+        n = n.replace(ch, " ")
+    suffixes = {"jr", "sr", "ii", "iii", "iv", "v"}
+    tokens = [t for t in n.split() if t not in suffixes]
+    return " ".join(tokens)
+
+
 class DraftKingsPropsClient:
     """
     Fetches player prop lines from DraftKings' public sportsbook API.
@@ -128,6 +148,31 @@ class DraftKingsPropsClient:
         props = self._parse(data, sport_name, dk_stat_map, prop_stat_map)
         logger.info("DraftKings: %d %s props parsed", len(props), sport_name)
         return props
+
+    def fetch_market_odds(self, sport_config: dict) -> dict[tuple[str, str], dict]:
+        """Return a {(normalized_player_name, stat_type): {...}} odds map.
+
+        Each value carries the DraftKings line plus the Over/Under American odds
+        so callers can de-vig and blend a market probability into the model.
+        Returns an empty dict when DraftKings is unavailable (graceful no-op —
+        the model simply runs unanchored).
+        """
+        props = self.fetch_props(sport_config)
+        odds_map: dict[tuple[str, str], dict] = {}
+        for p in props:
+            if p.get("over_odds") is None or p.get("under_odds") is None:
+                continue
+            key = (_normalize_name(p["player_name"]), p["stat_type"])
+            odds_map[key] = {
+                "line": p["line"],
+                "over_odds": p["over_odds"],
+                "under_odds": p["under_odds"],
+            }
+        logger.info(
+            "DraftKings: %d %s market odds available for blending",
+            len(odds_map), sport_config["name"],
+        )
+        return odds_map
 
     # ------------------------------------------------------------------
     # Fetch
@@ -228,6 +273,7 @@ class DraftKingsPropsClient:
         over = next((o for o in outcomes if o.get("name") == "Over"), None)
         if over is None:
             return
+        under = next((o for o in outcomes if o.get("name") == "Under"), None)
 
         player_name = str(over.get("description") or "").strip()
         if not player_name:
@@ -241,6 +287,19 @@ class DraftKingsPropsClient:
             line = float(point)
         except (TypeError, ValueError):
             return
+
+        # American odds for each side, used to de-vig a market probability.
+        # Missing/garbled odds leave the field None so the blend is skipped.
+        def _odds(outcome: dict | None) -> float | None:
+            if not outcome:
+                return None
+            raw = outcome.get("oddsAmerican")
+            if raw is None:
+                return None
+            try:
+                return float(str(raw).replace("+", ""))
+            except (TypeError, ValueError):
+                return None
 
         key = (player_name, stat_type)
         if key not in seen:
@@ -256,4 +315,6 @@ class DraftKingsPropsClient:
                 "line": line,
                 "start_time": "",
                 "pick_type": "standard",
+                "over_odds": _odds(over),
+                "under_odds": _odds(under),
             }

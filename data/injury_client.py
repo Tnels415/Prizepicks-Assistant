@@ -208,6 +208,32 @@ def _espn_injury_status(
     return None
 
 
+def classify_injury_severity(designation: str | None) -> str:
+    """Map a free-text ESPN designation to a coarse severity tier.
+
+    Returns one of: "out", "doubtful", "questionable", "probable", "none".
+
+    Rationale: blanket-suppressing every player who carries any designation
+    silently discards a large number of perfectly playable props — in the NBA
+    especially, stars are routinely listed "Questionable"/"Game-Time Decision"
+    and still play their normal role.  Tiering lets the caller suppress only the
+    likely-absent players and apply a graded confidence penalty to the rest.
+    """
+    if not designation:
+        return "none"
+    d = designation.lower()
+    if any(k in d for k in ("out", "inactive", "suspend", "injured reserve", "ir", "10-day", "60-day")):
+        return "out"
+    if "doubtful" in d:
+        return "doubtful"
+    if any(k in d for k in ("questionable", "game-time", "game time", "gtd")):
+        return "questionable"
+    if any(k in d for k in ("probable", "day-to-day", "day to day", "dtd", "available")):
+        return "probable"
+    # Unknown but non-empty designation — treat conservatively as questionable.
+    return "questionable"
+
+
 def get_player_injury_status(player_name: str, sport: str) -> str | None:
     """Return the player's current injury designation, or None if healthy/unknown.
 

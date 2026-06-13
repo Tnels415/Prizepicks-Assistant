@@ -10,11 +10,16 @@ from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
 import analysis.distribution_model as _dist_model
 from data.news_client import get_player_news_sentiment
-from data.injury_client import get_player_injury_status
+from data.injury_client import get_player_injury_status, classify_injury_severity
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
 from analysis.watchability import watchable_label
-from config import SPORT_CONFIG, GOBLIN_STD_THRESHOLD
+from analysis import market as _market
+from data.draftkings_client import _normalize_name as _market_norm
+from config import (
+    SPORT_CONFIG, GOBLIN_STD_THRESHOLD,
+    MARKET_BLEND_WEIGHT, INJURY_QUESTIONABLE_SHRINK, INJURY_PROBABLE_SHRINK,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,7 @@ class PropAnalyzer:
         self._team_abbr_to_id: dict[str, int] = {}
         self._team_id_to_abbr: dict[int, str] = {}
         self._todays_games: list[dict] = []
+        self._market_odds: dict[tuple[str, str], dict] = {}
 
     def analyze_all_props(self, props: list[dict]) -> list[PropResult]:
         sport_key = self._sport["odds_sport_key"]
@@ -91,6 +97,17 @@ class PropAnalyzer:
         self._team_abbr_to_id = self._schedule.get_team_abbr_to_id()
         self._team_id_to_abbr = self._schedule.get_team_id_to_abbr()
         self._todays_games = self._schedule.get_todays_games(sport_key=sport_key)
+
+        # Market-odds anchor (Phase 2): pre-fetch DraftKings Over/Under odds so
+        # each prop's model probability can be blended toward the devigged sharp
+        # number.  Fully graceful — an empty map means the model runs unanchored.
+        if MARKET_BLEND_WEIGHT > 0:
+            try:
+                from data.draftkings_client import DraftKingsPropsClient
+                self._market_odds = DraftKingsPropsClient().fetch_market_odds(self._sport)
+            except Exception as exc:
+                logger.warning("Market-odds fetch failed (%s) — running unanchored", exc)
+                self._market_odds = {}
 
         results: list[PropResult] = []
         seen_players: dict[str, pd.DataFrame] = {}
@@ -143,15 +160,23 @@ class PropAnalyzer:
             logger.warning("Skipping %s — player ID not found", player_name)
             return None
 
-        # Suppress all props for players carrying any active injury designation.
-        # Checked before the game log fetch to avoid wasted API calls.
+        # Tiered injury handling (checked before the game-log fetch to avoid
+        # wasted API calls).  Out/Doubtful → suppress entirely.  Questionable /
+        # Probable → keep the prop but shrink confidence toward 50% later, so we
+        # don't blanket-discard players who are likely to play their usual role.
         injury_status = get_player_injury_status(player_name, self._sport["name"])
-        if injury_status is not None:
+        injury_severity = classify_injury_severity(injury_status)
+        if injury_severity in ("out", "doubtful"):
             logger.info(
-                "Suppressing %s %s — injury designation: %s",
-                player_name, stat_type, injury_status,
+                "Suppressing %s %s — injury designation: %s (%s)",
+                player_name, stat_type, injury_status, injury_severity,
             )
             return []
+        if injury_severity in ("questionable", "probable"):
+            logger.info(
+                "%s %s — playing through %s (%s): confidence shrunk",
+                player_name, stat_type, injury_status, injury_severity,
+            )
 
         if player_name not in player_cache:
             player_cache[player_name] = self._stats.get_player_game_log(player_id)
@@ -388,6 +413,30 @@ class PropAnalyzer:
                     "%s %s: player-level bias %.1fpp applied", player_name, stat_type, player_delta
                 )
 
+        # --- Injury confidence shrink (questionable/probable) ----------------
+        # Pull the probability toward 50% so an uncertain availability reduces
+        # edge without discarding the pick.  Reduces both OVER and UNDER edge.
+        if injury_severity == "questionable":
+            over_prob = 50.0 + (over_prob - 50.0) * (1.0 - INJURY_QUESTIONABLE_SHRINK)
+        elif injury_severity == "probable":
+            over_prob = 50.0 + (over_prob - 50.0) * (1.0 - INJURY_PROBABLE_SHRINK)
+
+        # --- Market-odds blend (Phase 2) -------------------------------------
+        # Anchor the model toward the devigged sharp Over/Under probability.
+        # Only blend when DraftKings offers the SAME line as PrizePicks — a
+        # devigged probability is only valid for the line it was priced at.
+        market_over: float | None = None
+        mkt = self._market_odds.get((_market_norm(player_name), stat_type))
+        if mkt is not None and abs(float(mkt["line"]) - float(line)) < 0.01:
+            devig = _market.devig_two_way(mkt["over_odds"], mkt["under_odds"])
+            if devig is not None:
+                market_over = devig[0]
+                over_prob = _market.blend(over_prob, market_over, MARKET_BLEND_WEIGHT)
+                logger.debug(
+                    "%s %s: blended model→market %.1f%% (w=%.2f, mkt=%.1f%%)",
+                    player_name, stat_type, over_prob, MARKET_BLEND_WEIGHT, market_over,
+                )
+
         under_prob = 100.0 - over_prob
 
         raw_adj = {
@@ -405,6 +454,7 @@ class PropAnalyzer:
             # Distribution model diagnostic — stored but excluded from FACTOR_NAMES
             # so the calibrator's factor-weight loop ignores it.
             "_dist_over": round(dist_base, 2) if dist_base is not None else None,
+            "_market_over": round(market_over, 2) if market_over is not None else None,
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)
