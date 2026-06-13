@@ -186,7 +186,7 @@ class DraftKingsPropsClient:
                     url,
                     headers=headers,
                     params={"format": "json"},
-                    timeout=15,
+                    timeout=8,   # kept short — DK is a non-critical market-odds anchor
                 )
                 if resp.status_code == 403:
                     logger.debug(

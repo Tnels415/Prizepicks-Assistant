@@ -13,13 +13,66 @@ from dotenv import load_dotenv
 load_dotenv()
 
 print("\n" + "=" * 55)
-print("  NBA Prop Analyzer — Setup Diagnostic")
+print("  Prop Analyzer — Setup Diagnostic")
 print("=" * 55)
 
 errors = 0
 
+# --- Python version ---
+print("\n[0] Checking Python version...")
+v = sys.version_info
+if v >= (3, 9):
+    print(f"  OK  Python {v.major}.{v.minor}.{v.micro}")
+else:
+    print(f"  WARN  Python {v.major}.{v.minor} — recommend 3.9+")
+
+# --- Core package imports ---
+print("\n[1] Checking core package imports...")
+for module, pkg in [
+    ("requests", "requests"),
+    ("pandas", "pandas"),
+    ("numpy", "numpy"),
+    ("dotenv", "python-dotenv"),
+    ("tenacity", "tenacity"),
+]:
+    try:
+        __import__(module)
+        print(f"  OK  {module}")
+    except ImportError:
+        print(f"  MISSING  {module}  (install: pip install {pkg})")
+        errors += 1
+
+# --- Analyzer module imports ---
+print("\n[2] Checking analyzer imports (catches code bugs)...")
+try:
+    from analysis import market as _market
+    p_over, _ = _market.devig_two_way(-110, -110)
+    assert abs(p_over - 50.0) < 0.01
+    print("  OK  analysis.market (de-vig math)")
+except Exception as exc:
+    print(f"  FAIL  analysis.market: {exc}")
+    errors += 1
+
+try:
+    from data.injury_client import classify_injury_severity
+    assert classify_injury_severity("Out") == "out"
+    assert classify_injury_severity("Questionable") == "questionable"
+    assert classify_injury_severity(None) == "none"
+    print("  OK  data.injury_client (tiered classification)")
+except Exception as exc:
+    print(f"  FAIL  data.injury_client: {exc}")
+    errors += 1
+
+try:
+    from data.draftkings_client import _normalize_name
+    assert _normalize_name("P.J. Washington Jr.") == "pj washington"
+    print("  OK  data.draftkings_client (name normalization)")
+except Exception as exc:
+    print(f"  FAIL  data.draftkings_client: {exc}")
+    errors += 1
+
 # --- .env keys ---
-print("\n[1] Checking .env variables...")
+print("\n[3] Checking .env variables...")
 checks = {
     "THE_ODDS_API_KEY": "Odds API key (auto prop lines)",
     "EMAIL_FROM":       "Gmail address to send from",
@@ -37,7 +90,7 @@ for var, desc in checks.items():
         errors += 1
 
 # --- Odds API live test ---
-print("\n[2] Testing The Odds API connection...")
+print("\n[4] Testing The Odds API connection...")
 odds_key = os.getenv("THE_ODDS_API_KEY")
 if not odds_key or odds_key == "your_odds_api_key_here":
     print("  SKIP — THE_ODDS_API_KEY not set")
@@ -72,8 +125,8 @@ else:
                 ct_str = e.get("commence_time", "")[:16].replace("T", " ") + " UTC"
                 print(f"        {e.get('away_team')} @ {e.get('home_team')}  ({ct_str})")
             if not todays:
-                print("  NOTE — No games in window yet. If games are scheduled today,")
-                print("         the Odds API may not have listed them yet.")
+                print("  NOTE — No NBA games in window. NBA season may have ended,")
+                print("         or games haven't been listed yet. Check MLB is working.")
         else:
             print(f"  FAIL — Unexpected HTTP {resp.status_code}")
             errors += 1
@@ -81,13 +134,86 @@ else:
         print(f"  FAIL — Could not reach api.the-odds-api.com: {exc}")
         errors += 1
 
+# --- PrizePicks availability ---
+print("\n[5] Testing PrizePicks API connection...")
+try:
+    import requests
+    resp = requests.get(
+        "https://api.prizepicks.com/projections",
+        params={"league_id": 2, "per_page": 5, "single_stat": "true"},  # MLB
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/17.4.1 Safari/605.1.15"
+            ),
+            "Accept": "application/json",
+            "Referer": "https://app.prizepicks.com/",
+            "Origin": "https://app.prizepicks.com",
+        },
+        timeout=12,
+    )
+    if resp.status_code == 200:
+        count = len(resp.json().get("data", []))
+        print(f"  OK  — PrizePicks reachable, {count} MLB projections in sample")
+        if count == 0:
+            print("  NOTE — 0 MLB props returned. PrizePicks may not have posted lines yet.")
+            print("         Try again after 1 PM ET, or fill props.json manually.")
+    elif resp.status_code == 403:
+        print("  WARN — PrizePicks returned 403 (bot-block).")
+        print("         The system will retry with other header variants automatically.")
+        print("         If this persists, fill props.json as a fallback.")
+    else:
+        print(f"  WARN — PrizePicks HTTP {resp.status_code}: {resp.text[:80]}")
+except Exception as exc:
+    print(f"  WARN — PrizePicks unreachable: {exc}")
+
+# --- DraftKings reachability ---
+print("\n[6] Testing DraftKings (market-odds anchor)...")
+try:
+    import requests
+    resp = requests.get(
+        "https://sportsbook.draftkings.com/sites/US-SB/api/v5/eventgroups/40625",
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 Safari/605.1.15",
+            "Accept": "application/json",
+            "Referer": "https://sportsbook.draftkings.com/",
+        },
+        params={"format": "json"},
+        timeout=8,
+    )
+    if resp.status_code == 200:
+        print("  OK  — DraftKings reachable; market-odds blend will be active")
+    elif resp.status_code == 403:
+        print("  WARN — DraftKings returned 403. Market-odds blend will be skipped.")
+        print("         Model runs on pure statistical analysis (still fully functional).")
+    else:
+        print(f"  WARN — DraftKings HTTP {resp.status_code}")
+except Exception as exc:
+    print(f"  WARN — DraftKings unreachable: {exc}")
+    print("         Market-odds blend skipped; model runs on pure analysis (still functional).")
+
+# --- Active sports check ---
+print("\n[7] Active sports today...")
+try:
+    from config import get_active_sports, SPORT_CONFIG
+    from datetime import date
+    active = get_active_sports()
+    print(f"  Active sports: {', '.join(active) if active else '(none)'}")
+    if not active:
+        print("  WARN — No sports active this month. Check SPORT_CONFIG active_months.")
+        errors += 1
+except Exception as exc:
+    print(f"  FAIL  config: {exc}")
+    errors += 1
+
 # --- Summary ---
 print("\n" + "=" * 55)
 if errors == 0:
     print("  All checks passed. Run: python3 main.py")
     print("  NOTE: Prop lines are usually posted after 1 PM ET.")
 else:
-    print(f"  {errors} issue(s) found — fix them in your .env file.")
+    print(f"  {errors} issue(s) found — fix them before running main.py.")
     print()
     print("  Your .env should contain:")
     print("    THE_ODDS_API_KEY=<key from the-odds-api.com>")
