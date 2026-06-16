@@ -203,7 +203,7 @@ SPORT_CONFIG: dict[str, dict] = {
         "name": "NBA",
         "full_name": "NBA Basketball",
         "odds_sport_key": "basketball_nba",
-        "active_months": [10, 11, 12, 1, 2, 3, 4, 5, 6],
+        "active_months": [10, 11, 12, 1, 2, 3, 4, 5],  # Finals end by early June
         "markets": [
             "player_points", "player_rebounds", "player_assists",
             "player_threes", "player_steals", "player_blocks", "player_turnovers",
@@ -315,7 +315,7 @@ SPORT_CONFIG: dict[str, dict] = {
         "name": "NHL",
         "full_name": "NHL Hockey",
         "odds_sport_key": "icehockey_nhl",
-        "active_months": [10, 11, 12, 1, 2, 3, 4, 5, 6],
+        "active_months": [10, 11, 12, 1, 2, 3, 4, 5],  # Stanley Cup Finals end by mid-June
         "markets": [
             "player_points", "player_goals", "player_assists",
             "player_shots_on_goal", "player_power_play_points",
