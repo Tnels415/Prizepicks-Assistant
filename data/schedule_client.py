@@ -111,9 +111,17 @@ class ScheduleClient:
     # Unified entry point — dispatches by sport key
     # ------------------------------------------------------------------
 
-    def get_todays_games(self, sport_key: str = "basketball_nba") -> list[dict]:
+    def get_todays_games(self, sport_key: str = "basketball_nba") -> list[dict] | None:
         """Return today's games for the given sport. Game dicts have keys:
             game_id, home_team_abbr, home_team_id, away_team_abbr, away_team_id, game_status
+
+        Returns:
+            list[dict]  — games found (may be empty list when season is over / no games today)
+            None        — all schedule APIs failed; caller should treat as "unknown"
+
+        The None vs empty-list distinction matters: an empty list means a live API
+        confirmed there are no games today (safe to skip the sport), while None means
+        every API errored and we don't know whether there are games (fall back to props).
 
         Results are cached for the calendar day so repeated calls (e.g. from
         main.py and then from PropAnalyzer) hit the network only once.
@@ -145,16 +153,31 @@ class ScheduleClient:
     # NBA
     # ------------------------------------------------------------------
 
-    def _get_nba_games(self) -> list[dict]:
-        games = self._try_nba_live_scoreboard()
-        if not games:
-            games = self._try_nba_stats_scoreboard()
-        if not games:
-            games = self._try_espn_nba_scoreboard()
-        if not games:
-            games = self._try_odds_api_nba_events()
-        if not games:
-            games = self._infer_nba_games_from_props_json()
+    def _get_nba_games(self) -> list[dict] | None:
+        # Each helper returns (games_or_none, api_succeeded).
+        # api_succeeded=True means the API responded (even with 0 games).
+        result, ok = self._try_nba_live_scoreboard()
+        if not result:
+            r2, ok2 = self._try_nba_stats_scoreboard()
+            ok = ok or ok2
+            result = r2
+        if not result:
+            r3, ok3 = self._try_espn_nba_scoreboard()
+            ok = ok or ok3
+            result = r3
+        if not result:
+            r4, ok4 = self._try_odds_api_nba_events()
+            ok = ok or ok4
+            result = r4
+        if not result and not ok:
+            # All live APIs failed — last resort: props.json inference
+            result = self._infer_nba_games_from_props_json()
+            if result:
+                ok = True
+        games = result or []
+        if not ok:
+            logger.warning("All NBA schedule APIs failed — cannot confirm whether games exist today")
+            return None
         # The official NBA scoreboards carry no TV data — enrich from ESPN so the
         # "Watchable on TV" view works regardless of which source succeeded.
         if games and not any(g.get("broadcasts") for g in games):
@@ -209,18 +232,18 @@ class ScheduleClient:
             enriched, len(games), len(by_abbr),
         )
 
-    def _try_nba_live_scoreboard(self) -> list[dict]:
+    def _try_nba_live_scoreboard(self) -> tuple[list[dict], bool]:
         try:
             from nba_api.live.nba.endpoints import scoreboard as live_sb
             sb = live_sb.ScoreBoard()
             raw = sb.get_dict()
             game_list = raw.get("scoreboard", {}).get("games", [])
-            return [g for g in (self._parse_nba_live_game(x) for x in game_list) if g]
+            return [g for g in (self._parse_nba_live_game(x) for x in game_list) if g], True
         except Exception as exc:
             logger.debug("NBA live scoreboard failed: %s", exc)
-            return []
+            return [], False
 
-    def _try_nba_stats_scoreboard(self) -> list[dict]:
+    def _try_nba_stats_scoreboard(self) -> tuple[list[dict], bool]:
         try:
             from nba_api.stats.endpoints import scoreboardv2
             today_str = date.today().strftime("%m/%d/%Y")
@@ -239,10 +262,10 @@ class ScheduleClient:
                     "game_status": str(row.get("GAME_STATUS_TEXT", "")),
                     "broadcasts": [],
                 })
-            return results
+            return results, True
         except Exception as exc:
             logger.warning("NBA stats scoreboard failed: %s", exc)
-            return []
+            return [], False
 
     # ESPN uses slightly different abbreviations for some NBA teams.
     # Normalize them to the NBA-standard abbreviations used by _TEAM_ABBR_TO_ID.
@@ -255,7 +278,7 @@ class ScheduleClient:
         "WSH": "WAS",  # Washington Wizards
     }
 
-    def _try_espn_nba_scoreboard(self) -> list[dict]:
+    def _try_espn_nba_scoreboard(self) -> tuple[list[dict], bool]:
         """ESPN unofficial scoreboard — used as a fallback when stats.nba.com is unavailable."""
         try:
             resp = requests.get(
@@ -266,7 +289,7 @@ class ScheduleClient:
             data = resp.json()
         except Exception as exc:
             logger.warning("ESPN NBA scoreboard failed: %s", exc)
-            return []
+            return [], False
 
         today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
@@ -307,9 +330,9 @@ class ScheduleClient:
                 })
 
         logger.info("ESPN NBA fallback: found %d games today", len(games))
-        return games
+        return games, True
 
-    def _try_odds_api_nba_events(self) -> list[dict]:
+    def _try_odds_api_nba_events(self) -> tuple[list[dict], bool]:
         """Odds API v4 events endpoint — last-resort fallback when all other NBA
         schedule sources are unavailable (e.g. ESPN 403, stats.nba.com down).
         Returns minimal game dicts (no team IDs — stat lookups will still work
@@ -323,7 +346,7 @@ class ScheduleClient:
             api_key = os.environ.get("THE_ODDS_API_KEY", "")
         if not api_key:
             logger.debug("Odds API key not set — skipping Odds API NBA events fallback")
-            return []
+            return [], False
         try:
             resp = requests.get(
                 "https://api.the-odds-api.com/v4/sports/basketball_nba/events",
@@ -334,7 +357,7 @@ class ScheduleClient:
             events = resp.json()
         except Exception as exc:
             logger.warning("Odds API NBA events fallback failed: %s", exc)
-            return []
+            return [], False
 
         today_str = date.today().isoformat()
         games = []
@@ -361,7 +384,7 @@ class ScheduleClient:
             })
 
         logger.info("Odds API NBA events fallback: found %d games today", len(games))
-        return games
+        return games, True
 
     def _infer_nba_games_from_props_json(self) -> list[dict]:
         """Absolute last resort: read team abbreviations from props.json and create
@@ -451,7 +474,7 @@ class ScheduleClient:
     # NHL — official NHL Web API (api-web.nhle.com)
     # ------------------------------------------------------------------
 
-    def _get_nhl_games(self) -> list[dict]:
+    def _get_nhl_games(self) -> list[dict] | None:
         today_str = date.today().isoformat()
         try:
             resp = requests.get(
@@ -462,7 +485,7 @@ class ScheduleClient:
             data = resp.json()
         except Exception as exc:
             logger.warning("NHL schedule fetch failed: %s", exc)
-            return []
+            return None
 
         games = []
         for day in data.get("gameWeek", []):
@@ -488,7 +511,7 @@ class ScheduleClient:
     # NFL — ESPN unofficial scoreboard API
     # ------------------------------------------------------------------
 
-    def _get_nfl_games(self) -> list[dict]:
+    def _get_nfl_games(self) -> list[dict] | None:
         try:
             resp = requests.get(
                 "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
@@ -498,7 +521,7 @@ class ScheduleClient:
             data = resp.json()
         except Exception as exc:
             logger.warning("NFL schedule fetch failed: %s", exc)
-            return []
+            return None
 
         today_str = date.today().isoformat()  # "YYYY-MM-DD"
         games = []
@@ -532,7 +555,7 @@ class ScheduleClient:
     # MLB — official MLB Stats API
     # ------------------------------------------------------------------
 
-    def _get_mlb_games(self) -> list[dict]:
+    def _get_mlb_games(self) -> list[dict] | None:
         today_str = date.today().isoformat()
         try:
             resp = requests.get(
@@ -544,7 +567,7 @@ class ScheduleClient:
             data = resp.json()
         except Exception as exc:
             logger.warning("MLB schedule fetch failed: %s", exc)
-            return []
+            return None
 
         games = []
         for day in data.get("dates", []):

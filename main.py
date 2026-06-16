@@ -183,12 +183,22 @@ def main() -> int:
         logger.info("-" * 40)
         logger.info("%s %s analysis", emoji, sport_name)
 
-        # Check for games today (via schedule)
+        # Check for games today (via schedule).
+        # games is None  → all schedule APIs failed (unknown state)
+        # games == []    → API confirmed no games today (season over / off-day)
+        # games is list  → games scheduled today, proceed normally
         games = schedule.get_todays_games(sport_key=sport_cfg["odds_sport_key"])
         preloaded_props: list | None = None
 
-        if not games:
-            # All schedule APIs down — try fetching props before giving up.
+        if games is not None and not games:
+            # Schedule API responded and confirmed zero games today — skip entirely.
+            # Do NOT fall back to props: PrizePicks may still list stale lines from
+            # a previous day even when no games are actually scheduled.
+            logger.info("No %s games today (confirmed by schedule API) — skipping", sport_name)
+            continue
+
+        if games is None:
+            # All schedule APIs errored — try fetching props before giving up.
             # If there are real props, infer game context from team abbreviations
             # so analysis can proceed even without a schedule source.
             preloaded_props = odds_client.fetch_props(sport_cfg)
