@@ -57,3 +57,68 @@ def blend(model_prob_pct: float, market_prob_pct: float, weight: float) -> float
     w = max(0.0, min(1.0, weight))
     blended = (1.0 - w) * model_prob_pct + w * market_prob_pct
     return float(max(5.0, min(95.0, blended)))
+
+
+def dynamic_weight(base_weight: float, n_books: int) -> float:
+    """Scale the market blend weight by how many books back the consensus.
+
+    A single book is noisy and may be soft, so it gets a fraction of the base
+    weight; a multi-book consensus is the sharpest public signal available and
+    earns the full (slightly boosted) weight.  Clamped to [0, 0.85] so the model
+    is never fully overridden.
+
+        n_books >= 3  → full base weight, nudged up 10%
+        n_books == 2  → 85% of base
+        n_books == 1  → 60% of base
+    """
+    if n_books >= 3:
+        w = base_weight * 1.10
+    elif n_books == 2:
+        w = base_weight * 0.85
+    else:
+        w = base_weight * 0.60
+    return float(max(0.0, min(0.85, w)))
+
+
+def translate_prob_to_line(
+    p_over_at_book_line: float,
+    book_line: float,
+    target_line: float,
+    stat_type: str,
+    projected_mean: float,
+    series,
+) -> float | None:
+    """Translate a de-vigged P(over) priced at book_line to a different target_line.
+
+    A de-vigged market probability is only valid for the exact line it was priced
+    at.  When the sportsbook line differs from the PrizePicks line, we shift the
+    probability using the player's own fitted distribution: compute the model's
+    P(over) at both lines and apply the book's *additive* offset (the book's edge
+    over the raw model) to the model's probability at the target line.
+
+        market_target = model_target + (market_book − model_book)
+
+    This preserves the book's information ("the market thinks this player is
+    hotter/colder than the raw model") while moving it to the line we actually
+    play.  Returns None when the distribution can't be fit (caller skips the
+    blend) or when the lines are too far apart to trust the shift.
+    """
+    # Importing here avoids a heavy import at module load time.
+    from analysis import distribution_model as _dist
+
+    if abs(book_line - target_line) < 1e-9:
+        return p_over_at_book_line
+
+    # Only translate across a modest gap — beyond this the distribution shape
+    # error swamps the market signal and we're better off skipping the anchor.
+    if abs(book_line - target_line) > max(2.0, 0.25 * max(book_line, 1.0)):
+        return None
+
+    model_book = _dist.prob_over(stat_type, book_line, projected_mean, series)
+    model_target = _dist.prob_over(stat_type, target_line, projected_mean, series)
+    if model_book is None or model_target is None:
+        return None
+
+    offset = p_over_at_book_line - model_book[0]
+    translated = model_target[0] + offset
+    return float(max(1.0, min(99.0, translated)))

@@ -98,16 +98,14 @@ class PropAnalyzer:
         self._team_id_to_abbr = self._schedule.get_team_id_to_abbr()
         self._todays_games = self._schedule.get_todays_games(sport_key=sport_key)
 
-        # Market-odds anchor (Phase 2): pre-fetch DraftKings Over/Under odds so
-        # each prop's model probability can be blended toward the devigged sharp
-        # number.  Fully graceful — an empty map means the model runs unanchored.
+        # Market-odds anchor: pre-fetch a devigged sharp probability per prop so
+        # each model probability can be blended toward the market.  Two sources,
+        # consensus preferred:
+        #   1. The Odds API — multi-book US consensus (most robust; carries n_books)
+        #   2. DraftKings   — single-book fallback when the Odds API is unavailable
+        # Fully graceful — an empty map means the model simply runs unanchored.
         if MARKET_BLEND_WEIGHT > 0:
-            try:
-                from data.draftkings_client import DraftKingsPropsClient
-                self._market_odds = DraftKingsPropsClient().fetch_market_odds(self._sport)
-            except Exception as exc:
-                logger.warning("Market-odds fetch failed (%s) — running unanchored", exc)
-                self._market_odds = {}
+            self._market_odds = self._prefetch_market_odds()
 
         results: list[PropResult] = []
         seen_players: dict[str, pd.DataFrame] = {}
@@ -141,6 +139,51 @@ class PropAnalyzer:
             self._sport["name"], unique_players, len(results), n_skipped,
         )
         return results
+
+    def _prefetch_market_odds(self) -> dict[tuple[str, str], dict]:
+        """Build a unified {(norm_name, stat): {line, p_over, n_books}} market map.
+
+        Prefers The Odds API multi-book consensus; backfills any (player, stat)
+        the consensus is missing with a single-book DraftKings de-vig.  Every
+        entry exposes a de-vigged ``p_over`` (percent) and ``n_books`` so the
+        per-prop blend can weight the anchor by how many books back it.
+        """
+        unified: dict[tuple[str, str], dict] = {}
+
+        # 1. Multi-book consensus (preferred).
+        try:
+            from data.odds_api_market import OddsAPIMarketClient
+            consensus = OddsAPIMarketClient().fetch_consensus_odds(self._sport)
+            for key, q in consensus.items():
+                unified[key] = {
+                    "line": q["line"],
+                    "p_over": q["p_over"],
+                    "n_books": q["n_books"],
+                }
+        except Exception as exc:
+            logger.warning("Odds API consensus fetch failed (%s) — trying DraftKings", exc)
+
+        # 2. DraftKings single-book backfill for anything consensus didn't cover.
+        try:
+            from data.draftkings_client import DraftKingsPropsClient
+            dk = DraftKingsPropsClient().fetch_market_odds(self._sport)
+            for key, q in dk.items():
+                if key in unified:
+                    continue
+                devig = _market.devig_two_way(q["over_odds"], q["under_odds"])
+                if devig is None:
+                    continue
+                unified[key] = {"line": q["line"], "p_over": devig[0], "n_books": 1}
+        except Exception as exc:
+            logger.warning("DraftKings market-odds fetch failed (%s)", exc)
+
+        logger.info(
+            "%s market anchor: %d lines (%d multi-book consensus, %d single-book)",
+            self._sport["name"], len(unified),
+            sum(1 for v in unified.values() if v["n_books"] >= 2),
+            sum(1 for v in unified.values() if v["n_books"] == 1),
+        )
+        return unified
 
     def _analyze_single_prop(
         self,
@@ -421,20 +464,33 @@ class PropAnalyzer:
         elif injury_severity == "probable":
             over_prob = 50.0 + (over_prob - 50.0) * (1.0 - INJURY_PROBABLE_SHRINK)
 
-        # --- Market-odds blend (Phase 2) -------------------------------------
+        # --- Market-odds blend -----------------------------------------------
         # Anchor the model toward the devigged sharp Over/Under probability.
-        # Only blend when DraftKings offers the SAME line as PrizePicks — a
-        # devigged probability is only valid for the line it was priced at.
+        # A devigged probability is only valid for the line it was priced at, so
+        # when the book line differs from the PrizePicks line we translate it via
+        # the player's fitted distribution.  The blend weight scales with the
+        # number of books backing the consensus (sharper signal → more weight).
         market_over: float | None = None
         mkt = self._market_odds.get((_market_norm(player_name), stat_type))
-        if mkt is not None and abs(float(mkt["line"]) - float(line)) < 0.01:
-            devig = _market.devig_two_way(mkt["over_odds"], mkt["under_odds"])
-            if devig is not None:
-                market_over = devig[0]
-                over_prob = _market.blend(over_prob, market_over, MARKET_BLEND_WEIGHT)
+        if mkt is not None:
+            mkt_line = float(mkt["line"])
+            mkt_p_over = float(mkt["p_over"])
+            n_books = int(mkt.get("n_books", 1))
+            if abs(mkt_line - float(line)) < 0.01:
+                market_over = mkt_p_over
+            else:
+                market_over = _market.translate_prob_to_line(
+                    mkt_p_over, mkt_line, float(line),
+                    stat_type, predicted, stat_series,
+                )
+            if market_over is not None:
+                w = _market.dynamic_weight(MARKET_BLEND_WEIGHT, n_books)
+                over_prob = _market.blend(over_prob, market_over, w)
                 logger.debug(
-                    "%s %s: blended model→market %.1f%% (w=%.2f, mkt=%.1f%%)",
-                    player_name, stat_type, over_prob, MARKET_BLEND_WEIGHT, market_over,
+                    "%s %s: blended model→market %.1f%% "
+                    "(w=%.2f, n_books=%d, mkt=%.1f%% @ line %.1f→%.1f)",
+                    player_name, stat_type, over_prob, w, n_books,
+                    market_over, mkt_line, float(line),
                 )
 
         under_prob = 100.0 - over_prob

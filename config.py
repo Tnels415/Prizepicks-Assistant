@@ -490,8 +490,11 @@ SPORT_CONFIG: dict[str, dict] = {
 }
 
 # ── Accuracy-improvement feature flags (Phase 1-4) ──────────────────────────
-# Phase 2: market odds blend
-MARKET_BLEND_WEIGHT = 0.40          # weight given to devigged sportsbook prob (0=model only)
+# Market odds blend — base weight given to the devigged sharp probability.
+# This is a BASE weight; analysis.market.dynamic_weight scales it per prop by the
+# number of books backing the consensus (3+ books → ~0.55, 1 book → ~0.30), so
+# the model is anchored hardest where the market signal is sharpest.
+MARKET_BLEND_WEIGHT = 0.50          # base weight given to devigged sportsbook prob (0=model only)
 MARKET_ODDS_MAX_REQUESTS_PER_RUN = 30  # hard cap to protect the free-tier quota
 
 # Injury tiering — confidence shrink applied to players who carry a designation
