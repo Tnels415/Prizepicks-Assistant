@@ -47,73 +47,71 @@ def render_yesterday_section(
 
     score_color = "#28a745" if pct >= 60 else "#e67e22" if pct >= 50 else "#dc3545"
 
-    rows_html = ""
+    cards_html = ""
     for r in sorted(yesterday_results, key=lambda x: x.get("rank", 99))[:10]:
         correct = r.get("correct")
         actual = r.get("actual_value")
         sport = r.get("sport", "")
         if correct == -1:
             icon = "&#8212;"
-            row_style = "background:#f8f9fa"
+            bg = "#f8f9fa"
             actual_str = "DNP"
         elif correct == 1:
             icon = "&#10003;"
-            row_style = "background:#d4f0da"
+            bg = "#d4f0da"
             actual_str = f"{actual:.1f}" if actual is not None else "?"
         elif correct == 0:
             icon = "&#10007;"
-            row_style = "background:#fde8e8"
+            bg = "#fde8e8"
             actual_str = f"{actual:.1f}" if actual is not None else "?"
         else:
             icon = "&#8230;"
-            row_style = ""
+            bg = "#fff"
             actual_str = "—"
 
         dir_color = "#28a745" if r.get("direction") == "OVER" else "#e67e22"
-        sport_tag = f"<span style='font-size:10px;color:#999;margin-left:4px'>{sport}</span>" if sport else ""
-        rows_html += f"""
-      <tr style="{row_style}">
-        <td style="padding:6px 10px;font-weight:bold">{r.get('rank','')}</td>
-        <td style="padding:6px 10px">{r.get('player_name','')}{sport_tag}
-          <span style="color:{dir_color};font-weight:bold;font-size:11px"> {r.get('direction','')}</span></td>
-        <td style="padding:6px 10px">{r.get('stat_type','')}</td>
-        <td style="padding:6px 10px;font-weight:bold">{r.get('line','')}</td>
-        <td style="padding:6px 10px">{r.get('predicted_value','')}</td>
-        <td style="padding:6px 10px">{r.get('hit_probability',''):.0f}%</td>
-        <td style="padding:6px 10px;font-weight:bold">{actual_str}</td>
-        <td style="padding:6px 10px;font-size:16px;text-align:center">{icon}</td>
-      </tr>"""
+        sport_tag = f" <span style='font-size:10px;color:#999'>({sport})</span>" if sport else ""
+        prob = r.get("hit_probability", 0)
+        line = r.get("line", "")
+        pred = r.get("predicted_value", "")
+
+        cards_html += f"""
+  <div style="background:{bg};border-bottom:1px solid #e8c95a;padding:8px 14px;font-size:12px">
+    <div style="display:table;width:100%">
+      <div style="display:table-cell;vertical-align:middle">
+        <strong>{r.get('player_name','')}</strong>{sport_tag}
+        <span style="color:{dir_color};font-weight:bold"> {r.get('direction','')}</span>
+        {r.get('stat_type','')} @ <strong>{line}</strong>
+      </div>
+      <div style="display:table-cell;vertical-align:middle;text-align:right;white-space:nowrap;width:80px">
+        <span style="font-size:16px">{icon}</span>
+        <span style="color:#555;margin-left:4px">Actual: <b>{actual_str}</b></span>
+      </div>
+    </div>
+    <div style="font-size:10px;color:#777;margin-top:2px">
+      Pred {pred} &nbsp;·&nbsp; {prob:.0f}% confidence
+    </div>
+  </div>"""
 
     stat_accuracy = ""
     for stat, data in cumulative.get("by_stat_type", {}).items():
-        stat_accuracy += f"<span style='margin-right:14px'><b>{stat}</b> {data['pct']}%</span>"
+        stat_accuracy += f"<span style='margin-right:12px'><b>{stat}</b> {data['pct']}%</span>"
 
     return f"""
-  <div style="padding:14px 20px;background:#fff8e1;border-left:4px solid #f0a500;margin-bottom:0">
-    <div style="font-weight:bold;font-size:14px;color:#333;margin-bottom:6px">
-      Yesterday's Results &mdash; {yesterday_date.strftime('%B %d, %Y')}
+  <div style="background:#fff8e1;border-left:4px solid #f0a500;margin-bottom:0">
+    <div style="padding:12px 14px 6px">
+      <div style="font-weight:bold;font-size:14px;color:#333;margin-bottom:4px">
+        Yesterday's Results &mdash; {yesterday_date.strftime('%B %d, %Y')}
+      </div>
+      <div style="font-size:13px">
+        <span style="font-size:22px;font-weight:bold;color:{score_color}">{n_correct}/{n_total}</span>
+        <span style="color:#555;margin-left:6px">({pct}% correct)</span>
+        {f'&nbsp;&nbsp;|&nbsp;&nbsp;<span style="color:#555">All-time: <b>{cum_correct}/{cum_total}</b> ({cum_pct}%)</span>' if cum_total else ''}
+        {f'&nbsp;&nbsp;<span style="color:#999;font-size:11px">· {len(dnp)} DNP excluded</span>' if dnp else ''}
+      </div>
     </div>
-    <div style="font-size:13px;margin-bottom:10px">
-      <span style="font-size:20px;font-weight:bold;color:{score_color}">{n_correct}/{n_total}</span>
-      <span style="color:#555;margin-left:6px">correct ({pct}% yesterday)</span>
-      &nbsp;&nbsp;|&nbsp;&nbsp;
-      <span style="color:#555">All-time: <b>{cum_correct}/{cum_total}</b> ({cum_pct}%)</span>
-      {f'&nbsp;&nbsp;|&nbsp;&nbsp;<span style="color:#999;font-size:11px">{len(dnp)} DNP excluded</span>' if dnp else ''}
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <tr style="background:#f0a500;color:#fff">
-        <th style="padding:5px 10px;text-align:left">#</th>
-        <th style="padding:5px 10px;text-align:left">Player</th>
-        <th style="padding:5px 10px;text-align:left">Prop</th>
-        <th style="padding:5px 10px;text-align:left">Line</th>
-        <th style="padding:5px 10px;text-align:left">Predicted</th>
-        <th style="padding:5px 10px;text-align:left">Prob</th>
-        <th style="padding:5px 10px;text-align:left">Actual</th>
-        <th style="padding:5px 10px;text-align:center">Result</th>
-      </tr>
-      {rows_html}
-    </table>
-    {f'<div style="margin-top:8px;font-size:11px;color:#777">Accuracy by stat type: {stat_accuracy}</div>' if stat_accuracy else ''}
+    {cards_html}
+    {f'<div style="padding:6px 14px;font-size:11px;color:#777">By stat type: {stat_accuracy}</div>' if stat_accuracy else ''}
     {_render_brier_badge(cumulative.get("brier_scores", {}))}
   </div>"""
 
@@ -129,7 +127,7 @@ def _render_sport_sections(results_by_sport: dict) -> str:
         emoji = cfg.get("emoji", "")
         full_name = cfg.get("full_name", sport_name)
         html += f"""
-  <div style="padding:10px 20px 4px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
+  <div style="padding:8px 14px;background:#2c3e7a;color:#fff;font-size:13px;font-weight:bold">
     {emoji} {full_name}
   </div>"""
 
@@ -138,20 +136,20 @@ def _render_sport_sections(results_by_sport: dict) -> str:
 
         if a_tier:
             html += """
-  <div style="padding:6px 20px 2px;background:#1a7a3c;color:#fff;font-size:12px;font-weight:bold">
+  <div style="padding:6px 14px;background:#1a7a3c;color:#fff;font-size:12px;font-weight:bold">
     &#11088; A-Tier — High Confidence (edge-cleared)
   </div>"""
             html += _render_picks_table(a_tier)
         if spec:
             if a_tier:
                 html += """
-  <div style="padding:6px 20px 2px;background:#5a6a8a;color:#fff;font-size:12px">
+  <div style="padding:6px 14px;background:#5a6a8a;color:#fff;font-size:12px">
     Speculative Picks
   </div>"""
             html += _render_picks_table(spec)
         if not a_tier and not spec:
             html += """
-  <div style="padding:8px 20px;font-size:12px;color:#888">No picks available.</div>"""
+  <div style="padding:8px 14px;font-size:12px;color:#888">No picks available.</div>"""
 
         html += '<div style="margin-bottom:12px"></div>'
     return html
@@ -162,9 +160,8 @@ def render_suggested_entries_section(entries: list) -> str:
     if not entries:
         return ""
 
-    rows_html = ""
+    entry_cards = ""
     for e in entries:
-        n = len(e.legs)
         ev_pct = (e.expected_value or 0.0) * 100.0
         ev_color = "#28a745" if ev_pct > 0 else "#dc3545"
         corr_color = "#28a745" if e.avg_correlation > 0 else "#888"
@@ -173,45 +170,39 @@ def render_suggested_entries_section(entries: list) -> str:
         for lg in e.legs:
             dir_color = "#28a745" if lg.direction == "OVER" else "#e67e22"
             legs_html += (
-                f"<div style='margin:2px 0'>"
-                f"<b>{lg.player_name}</b> "
+                f"<div style='margin:3px 0;font-size:12px'>"
+                f"<strong>{lg.player_name}</strong> "
                 f"<span style='color:{dir_color};font-weight:bold'>{lg.direction}</span> "
-                f"{lg.line} {lg.stat_type} "
-                f"<span style='color:#888;font-size:10px'>({lg.hit_probability:.0f}%)</span>"
+                f"{lg.stat_type} @ <strong>{lg.line}</strong> "
+                f"<span style='color:#888;font-size:11px'>({lg.hit_probability:.0f}%)</span>"
                 f"</div>"
             )
 
-        rows_html += f"""
-      <tr>
-        <td style="padding:8px 10px;font-weight:bold;font-size:13px;white-space:nowrap">{n}-Pick Power</td>
-        <td style="padding:8px 10px">{legs_html}</td>
-        <td style="padding:8px 10px;text-align:center;font-weight:bold;color:#1a2a5e">{e.joint_probability*100:.1f}%</td>
-        <td style="padding:8px 10px;text-align:center;color:{corr_color};font-weight:bold">{e.avg_correlation:+.2f}</td>
-        <td style="padding:8px 10px;text-align:center;font-weight:bold;color:{ev_color}">{ev_pct:+.1f}%</td>
-      </tr>"""
+        entry_cards += f"""
+  <div style="border-bottom:1px solid #d0d8ff;padding:10px 14px;background:#f8f9ff">
+    <div style="display:table;width:100%;margin-bottom:6px">
+      <div style="display:table-cell;vertical-align:middle">
+        <strong style="font-size:13px">{len(e.legs)}-Pick Power Play</strong>
+      </div>
+      <div style="display:table-cell;vertical-align:middle;text-align:right;white-space:nowrap;width:160px;font-size:12px">
+        <span style="font-weight:bold;color:#1a2a5e">Hit {e.joint_probability*100:.1f}%</span>
+        &nbsp;·&nbsp;
+        <span style="color:{corr_color}">Corr {e.avg_correlation:+.2f}</span>
+        &nbsp;·&nbsp;
+        <span style="font-weight:bold;color:{ev_color}">EV {ev_pct:+.1f}%</span>
+      </div>
+    </div>
+    {legs_html}
+  </div>"""
 
     return f"""
-  <div style="padding:10px 20px;background:#1a2a5e;color:#fff;font-size:15px;font-weight:bold">
+  <div style="padding:10px 14px;background:#1a2a5e;color:#fff;font-size:14px;font-weight:bold">
     &#127922; Suggested Power Plays (Correlation-Adjusted, +EV)
   </div>
-  <div style="padding:8px 20px 4px;background:#eef2ff;font-size:12px;color:#555">
-    Entries built by correlating legs that tend to hit together — joint probability adjusted via Gaussian copula.
-    EV = (joint hit % × payout multiplier) &minus; 1. Only +EV entries shown.
+  <div style="padding:8px 14px;background:#eef2ff;font-size:11px;color:#555">
+    Legs that tend to hit together. EV = (joint hit % &times; payout) &minus; 1. Only +EV shown.
   </div>
-  <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px">
-    <thead>
-      <tr style="background:#2c3e7a;color:#fff">
-        <th style="padding:6px 10px;text-align:left">Entry</th>
-        <th style="padding:6px 10px;text-align:left">Legs</th>
-        <th style="padding:6px 10px;text-align:center;width:80px">Joint Hit%</th>
-        <th style="padding:6px 10px;text-align:center;width:70px">Avg Corr</th>
-        <th style="padding:6px 10px;text-align:center;width:70px">EV/dollar</th>
-      </tr>
-    </thead>
-    <tbody>
-      {rows_html}
-    </tbody>
-  </table>
+  {entry_cards}
   <div style="margin-bottom:12px"></div>"""
 
 
@@ -250,7 +241,7 @@ def render_email_html(
     broadcast_coverage = broadcast_coverage or {}
     tv_has_picks = any(tv_results_by_sport.values())
     tv_section_html = """
-  <div style="padding:10px 20px;background:#0b6e4f;color:#fff;font-size:15px;font-weight:bold">
+  <div style="padding:10px 14px;background:#0b6e4f;color:#fff;font-size:14px;font-weight:bold">
     &#128250; Watchable on TV
   </div>"""
     if tv_has_picks:
@@ -272,12 +263,12 @@ def render_email_html(
                 "(e.g. <code>TV_NETWORKS=Bally Sports,YES Network</code>)."
             )
         tv_section_html += f"""
-  <div style="padding:10px 20px;background:#eafaf1;color:#0b6e4f;font-size:12.5px">
+  <div style="padding:10px 14px;background:#eafaf1;color:#0b6e4f;font-size:12px">
     {fallback_msg}
   </div><div style="margin-bottom:12px"></div>"""
 
     all_header_html = """
-  <div style="padding:10px 20px;background:#1a2a5e;color:#fff;font-size:15px;font-weight:bold">
+  <div style="padding:10px 14px;background:#1a2a5e;color:#fff;font-size:14px;font-weight:bold">
     &#128202; All Picks (Highest Probability)
   </div>"""
 
@@ -301,32 +292,39 @@ def render_email_html(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Prop Picks – {date_str}</title>
 <style>
-  body {{ margin: 0; padding: 0; background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; font-size: 12px; }}
-  .wrap {{ max-width: 1200px; margin: 20px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
-  .header {{ background: #1a2a5e; color: #fff; padding: 22px 26px; }}
-  .header h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }}
-  .header .meta {{ font-size: 12px; opacity: .8; }}
-  .header .meta span {{ margin-right: 18px; }}
-  .topbox {{ background: #eef2ff; border-left: 4px solid #1a2a5e; padding: 12px 20px; font-size: 12px; line-height: 1.8; }}
+  body {{ margin: 0; padding: 0; background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; font-size: 13px; }}
+  .wrap {{ max-width: 600px; margin: 16px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }}
+  .header {{ background: #1a2a5e; color: #fff; padding: 16px 18px; }}
+  .header h1 {{ margin: 0 0 5px; font-size: 18px; letter-spacing: .3px; }}
+  .header .meta {{ font-size: 11px; opacity: .85; line-height: 1.7; }}
+  .header .meta span {{ margin-right: 12px; display: inline-block; }}
+  .topbox {{ background: #eef2ff; border-left: 4px solid #1a2a5e; padding: 10px 14px; font-size: 12px; line-height: 1.7; }}
   .topbox strong {{ color: #1a2a5e; }}
-  table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
-  th {{ background: #2c3e7a; color: #fff; padding: 5px 5px; text-align: left; font-size: 10.5px; word-break: break-word; overflow: hidden; }}
-  td {{ padding: 5px 5px; vertical-align: top; border-bottom: 1px solid #eee; font-size: 11px; overflow: hidden; word-break: break-word; }}
-  tr:nth-child(even) td {{ background: #f8f9fb; }}
-  .high {{ background: #d4f0da !important; }}
-  .med  {{ background: #fff9e6 !important; }}
-  .low  {{ background: #f8f9fa !important; }}
-  .badge {{ display: inline-block; border-radius: 12px; padding: 2px 7px; font-weight: bold; font-size: 11.5px; }}
+  .card {{ border-bottom: 1px solid #e8eaf0; padding: 10px 14px; }}
+  .card.high {{ background: #f0fbf2; }}
+  .card.med  {{ background: #fffdf0; }}
+  .card.low  {{ background: #fafafa; }}
+  .card-top {{ display: table; width: 100%; border-spacing: 0; }}
+  .card-left {{ display: table-cell; vertical-align: middle; width: 34px; }}
+  .card-mid  {{ display: table-cell; vertical-align: middle; padding: 0 8px; }}
+  .card-right {{ display: table-cell; vertical-align: middle; text-align: right; white-space: nowrap; width: 90px; }}
+  .rank {{ display: inline-block; background: #1a2a5e; color: #fff; border-radius: 50%; width: 24px; height: 24px; line-height: 24px; text-align: center; font-size: 11px; font-weight: bold; }}
+  .player {{ font-weight: bold; font-size: 13px; }}
+  .pos-team {{ font-size: 10px; color: #888; }}
+  .prop-line {{ font-size: 12px; margin-top: 2px; }}
+  .badge {{ display: inline-block; border-radius: 10px; padding: 2px 8px; font-weight: bold; font-size: 12px; }}
   .badge.high {{ background: #28a745; color: #fff; }}
   .badge.med  {{ background: #ffc107; color: #333; }}
   .badge.low  {{ background: #adb5bd; color: #fff; }}
+  .edge-label {{ font-size: 11px; color: #555; margin-top: 3px; }}
+  .card-detail {{ font-size: 11px; color: #555; margin-top: 6px; line-height: 1.6; border-top: 1px solid #eee; padding-top: 5px; }}
   .dir-over  {{ color: #28a745; font-weight: bold; }}
   .dir-under {{ color: #e67e22; font-weight: bold; }}
   .pred-up   {{ color: #28a745; font-weight: bold; }}
   .pred-down {{ color: #dc3545; font-weight: bold; }}
-  .pill {{ display: inline-block; background: #e9ecef; border-radius: 6px; padding: 1px 5px; font-size: 10px; margin: 1px 2px; white-space: nowrap; }}
+  .pill {{ display: inline-block; background: #e9ecef; border-radius: 5px; padding: 1px 5px; font-size: 10px; margin: 1px 2px; }}
   .dq-badge {{ display: inline-block; background: #ffe08a; border-radius: 4px; padding: 1px 4px; font-size: 10px; color: #856404; margin-left: 3px; }}
-  .footer {{ background: #f0f2f5; padding: 14px 20px; font-size: 10.5px; color: #888; line-height: 1.6; }}
+  .footer {{ background: #f0f2f5; padding: 12px 14px; font-size: 10px; color: #888; line-height: 1.6; }}
 </style>
 </head>
 <body>
@@ -380,31 +378,7 @@ def _conf_class(prob: float) -> str:
 def _render_picks_table(picks: list) -> str:
     if not picks:
         return ""
-    rows = "\n".join(_render_row(r) for r in picks)
-    # width="" attributes on <th> are respected by Gmail/Outlook where colgroup/table-layout:fixed is ignored.
-    # Total budget ~1160px (1200px container minus 40px side padding).
-    # Columns: 28+140+75+48+100+42+50+58+52+75+rest(~492)
-    return f"""
-  <table width="100%" style="width:100%;border-collapse:collapse;margin-bottom:4px;table-layout:fixed">
-    <thead>
-      <tr>
-        <th width="28">#</th>
-        <th width="140">Player</th>
-        <th width="75">Team&nbsp;/&nbsp;TV</th>
-        <th width="48">Dir</th>
-        <th width="100">Prop</th>
-        <th width="42">Line</th>
-        <th width="50">Pred</th>
-        <th width="58">Prob</th>
-        <th width="52">Edge</th>
-        <th width="75">Hit&nbsp;Rate</th>
-        <th>Key Factors &amp; H2H</th>
-      </tr>
-    </thead>
-    <tbody>
-{rows}
-    </tbody>
-  </table>"""
+    return "\n".join(_render_row(r) for r in picks)
 
 
 def _render_row(r: PropResult) -> str:
@@ -412,16 +386,11 @@ def _render_row(r: PropResult) -> str:
     dir_cls = "dir-over" if r.direction == "OVER" else "dir-under"
     pred_cls = "pred-up" if r.predicted_value > r.line else "pred-down"
 
-    h2h_text = "N/A"
-    if r.h2h_sample_size >= 2:
-        hits = round(r.h2h_hit_rate * r.h2h_sample_size)
-        h2h_text = f"{hits}/{r.h2h_sample_size} vs {r.opponent_team_abbr}"
-
     pills = "".join(f'<span class="pill">{f}</span>' for f in r.key_factors)
 
     dq_badge = ""
     if r.data_quality == "partial":
-        dq_badge = '<span class="dq-badge">partial data</span>'
+        dq_badge = '<span class="dq-badge">partial</span>'
     elif r.data_quality == "minimal":
         dq_badge = '<span class="dq-badge">minimal data</span>'
 
@@ -430,31 +399,41 @@ def _render_row(r: PropResult) -> str:
     tier_val = getattr(r, "tier", "speculative")
     edge_label = f"+{edge_val*100:.1f}pp" if edge_val >= 0 else f"{edge_val*100:.1f}pp"
     edge_color = "#1a7a3c" if tier_val == "A" else "#888"
-    tier_badge = " &#11088;" if tier_val == "A" else ""
+    tier_star = " &#11088;" if tier_val == "A" else ""
 
-    # Team cell: abbr + TV network on second line (if available)
-    tv_sub = f'<br><span style="font-size:10px;color:#1a7a3c">{tv_label}</span>' if tv_label else ""
-    team_cell = f"{r.team_abbr}{tv_sub}"
-
-    # Key factors cell: pills + H2H + data-quality badge combined
-    h2h_inline = ""
+    # Detail line: prediction, hit rate, H2H, TV, factors
+    detail_parts = [
+        f"Pred <span class='{pred_cls}'>{r.predicted_value:.1f}</span>",
+        f"Hit {r.hit_rate_20:.0%} ({r.games_analyzed}G)",
+    ]
     if r.h2h_sample_size >= 2:
-        h2h_inline = f'<br><span style="font-size:10px;color:#555">H2H: {h2h_text}</span>'
-    factors_cell = f"{pills}{dq_badge}{h2h_inline}"
+        hits = round(r.h2h_hit_rate * r.h2h_sample_size)
+        detail_parts.append(f"H2H {hits}/{r.h2h_sample_size} vs {r.opponent_team_abbr}")
+    if tv_label:
+        detail_parts.append(f'<span style="color:#1a7a3c">{tv_label}</span>')
+    detail_line = " &nbsp;·&nbsp; ".join(detail_parts)
 
-    return f"""      <tr class="{cc}">
-        <td width="28"><strong>{r.rank}</strong>{tier_badge}</td>
-        <td width="140"><strong>{r.player_name}</strong><br><span style="font-size:10px;color:#888">{r.position}</span></td>
-        <td width="75">{team_cell}</td>
-        <td width="48"><span class="{dir_cls}">{r.direction}</span></td>
-        <td width="100">{r.stat_type}</td>
-        <td width="42" style="font-weight:bold">{r.line}</td>
-        <td width="50" class="{pred_cls}">{r.predicted_value:.1f}</td>
-        <td width="58"><span class="badge {cc}">{r.hit_probability:.0f}%</span></td>
-        <td width="52" style="color:{edge_color};font-weight:bold">{edge_label}</td>
-        <td width="75">{r.hit_rate_20:.0%}&nbsp;({r.games_analyzed}G)</td>
-        <td>{factors_cell}</td>
-      </tr>"""
+    return f"""<div class="card {cc}">
+  <div class="card-top">
+    <div class="card-left"><span class="rank">{r.rank}</span></div>
+    <div class="card-mid">
+      <div class="player">{r.player_name}{tier_star}</div>
+      <div class="pos-team">{r.position} &nbsp;·&nbsp; {r.team_abbr} vs {r.opponent_team_abbr}</div>
+      <div class="prop-line">
+        <span class="{dir_cls}">{r.direction}</span>
+        &nbsp;{r.stat_type}&nbsp;@&nbsp;<strong>{r.line}</strong>
+      </div>
+    </div>
+    <div class="card-right">
+      <span class="badge {cc}">{r.hit_probability:.0f}%</span>
+      <div class="edge-label" style="color:{edge_color}">{edge_label}</div>
+    </div>
+  </div>
+  <div class="card-detail">
+    {detail_line}
+    {f'<br>{pills}{dq_badge}' if pills or dq_badge else ''}
+  </div>
+</div>"""
 
 
 def _plain_sport_blocks(results_by_sport: dict) -> list[str]:
