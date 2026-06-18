@@ -71,6 +71,11 @@ _MIGRATIONS = [
     "ALTER TABLE predictions ADD COLUMN sport TEXT NOT NULL DEFAULT 'NBA'",
     "ALTER TABLE factor_weights ADD COLUMN sport TEXT NOT NULL DEFAULT 'NBA'",
     "CREATE INDEX IF NOT EXISTS idx_predictions_sport ON predictions(sport)",
+    # Closing-line value (CLV): the consensus market line/probability captured
+    # near game time.  closing_prob_over is P(over) in percent at close.
+    "ALTER TABLE predictions ADD COLUMN closing_line REAL",
+    "ALTER TABLE predictions ADD COLUMN closing_prob_over REAL",
+    "ALTER TABLE predictions ADD COLUMN clv REAL",
 ]
 
 
@@ -222,6 +227,70 @@ class HistoryStore:
                    WHERE id=?""",
                 (actual_value, correct, now, prediction_id),
             )
+
+    # ------------------------------------------------------------------
+    # Closing-line value (CLV)
+    # ------------------------------------------------------------------
+
+    def get_predictions_needing_closing_line(self, for_date: date) -> list[dict]:
+        """Return predictions on for_date that have no closing line captured yet."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, player_name, stat_type, line, direction, hit_probability,
+                          raw_adjustments, sport
+                   FROM predictions
+                   WHERE date=? AND closing_prob_over IS NULL""",
+                (for_date.isoformat(),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_closing_line(
+        self,
+        prediction_id: int,
+        direction: str,
+        hit_probability: float,
+        closing_line: float,
+        closing_prob_over: float,
+    ) -> None:
+        """Store the closing line and compute CLV for one prediction.
+
+        CLV is expressed in probability points on the side we bet: how much more
+        likely the closing market said our pick was, versus what we entered at.
+        Positive CLV means we beat the close — the single best leading indicator
+        of long-term +EV, available immediately (no need to wait for the result).
+        """
+        closing_for_side = (
+            closing_prob_over if direction == "OVER" else 100.0 - closing_prob_over
+        )
+        clv = closing_for_side - hit_probability
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE predictions
+                   SET closing_line=?, closing_prob_over=?, clv=?
+                   WHERE id=?""",
+                (closing_line, closing_prob_over, clv, prediction_id),
+            )
+
+    def get_clv_summary(self, sport: str | None = None) -> dict:
+        """Aggregate CLV stats across all predictions that have a closing line."""
+        with self._conn() as conn:
+            where = "WHERE clv IS NOT NULL"
+            args: tuple = ()
+            if sport:
+                where += " AND sport=?"
+                args = (sport,)
+            rows = conn.execute(
+                f"SELECT clv, correct FROM predictions {where}", args
+            ).fetchall()
+        clvs = [r["clv"] for r in rows]
+        if not clvs:
+            return {"n": 0, "avg_clv": 0.0, "pct_beat_close": 0.0}
+        beat = sum(1 for c in clvs if c > 0)
+        return {
+            "n": len(clvs),
+            "avg_clv": round(sum(clvs) / len(clvs), 2),
+            "pct_beat_close": round(beat / len(clvs) * 100, 1),
+        }
 
     # ------------------------------------------------------------------
     # Read for calibration
