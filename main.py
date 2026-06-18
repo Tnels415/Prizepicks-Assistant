@@ -368,12 +368,16 @@ def main() -> int:
         f"{total_results} Picks [{active_names}]"
     )
 
+    # Build correlation-aware power-play suggestions for the email.
+    _suggested_entries = _build_suggested_entries(results_by_sport)
+
     yest_html = render_yesterday_section(yesterday_results, cumulative_stats, yesterday)
     html_body = render_email_html(
         results_by_sport, today, duration,
         yesterday_section_html=yest_html,
         tv_results_by_sport=tv_results_by_sport,
         broadcast_coverage=broadcast_coverage,
+        suggested_entries=_suggested_entries,
     )
     plain_body = render_plain_text(
         results_by_sport, today,
@@ -382,6 +386,7 @@ def main() -> int:
         yesterday_date=yesterday,
         tv_results_by_sport=tv_results_by_sport,
         broadcast_coverage=broadcast_coverage,
+        suggested_entries=_suggested_entries,
     )
 
     send(subject, html_body, plain_body)
@@ -456,21 +461,24 @@ def main() -> int:
     return 0
 
 
-def _print_suggested_entries(results_by_sport: dict[str, list]) -> None:
-    """Build and print correlation-aware power-play entries from the day's picks."""
+def _build_suggested_entries(results_by_sport: dict[str, list]) -> list:
+    """Build correlation-aware power-play entries from the day's picks."""
     from config import POWER_PLAY_PAYOUTS, SUGGESTED_ENTRY_SIZES
 
-    # Combine every sport's A-tier-first ranking into one candidate pool.
     combined: list = []
     for sport_results in results_by_sport.values():
         combined.extend(sport_results)
     candidates = rank_and_tier(combined)[:20]
-    if len(candidates) < min(SUGGESTED_ENTRY_SIZES):
-        return
-
-    entries = _correlation.recommend_power_entries(
+    if not candidates or len(candidates) < min(SUGGESTED_ENTRY_SIZES):
+        return []
+    return _correlation.recommend_power_entries(
         candidates, SUGGESTED_ENTRY_SIZES, POWER_PLAY_PAYOUTS, min_ev=0.0
     )
+
+
+def _print_suggested_entries(results_by_sport: dict[str, list]) -> None:
+    """Print correlation-aware power-play entries to stdout."""
+    entries = _build_suggested_entries(results_by_sport)
     if not entries:
         return
 

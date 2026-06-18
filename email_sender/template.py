@@ -157,6 +157,64 @@ def _render_sport_sections(results_by_sport: dict) -> str:
     return html
 
 
+def render_suggested_entries_section(entries: list) -> str:
+    """Render an HTML section for correlation-aware power-play entry suggestions."""
+    if not entries:
+        return ""
+
+    rows_html = ""
+    for e in entries:
+        n = len(e.legs)
+        ev_pct = (e.expected_value or 0.0) * 100.0
+        ev_color = "#28a745" if ev_pct > 0 else "#dc3545"
+        corr_color = "#28a745" if e.avg_correlation > 0 else "#888"
+
+        legs_html = ""
+        for lg in e.legs:
+            dir_color = "#28a745" if lg.direction == "OVER" else "#e67e22"
+            legs_html += (
+                f"<div style='margin:2px 0'>"
+                f"<b>{lg.player_name}</b> "
+                f"<span style='color:{dir_color};font-weight:bold'>{lg.direction}</span> "
+                f"{lg.line} {lg.stat_type} "
+                f"<span style='color:#888;font-size:10px'>({lg.hit_probability:.0f}%)</span>"
+                f"</div>"
+            )
+
+        rows_html += f"""
+      <tr>
+        <td style="padding:8px 10px;font-weight:bold;font-size:13px;white-space:nowrap">{n}-Pick Power</td>
+        <td style="padding:8px 10px">{legs_html}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:bold;color:#1a2a5e">{e.joint_probability*100:.1f}%</td>
+        <td style="padding:8px 10px;text-align:center;color:{corr_color};font-weight:bold">{e.avg_correlation:+.2f}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:bold;color:{ev_color}">{ev_pct:+.1f}%</td>
+      </tr>"""
+
+    return f"""
+  <div style="padding:10px 20px;background:#1a2a5e;color:#fff;font-size:15px;font-weight:bold">
+    &#127922; Suggested Power Plays (Correlation-Adjusted, +EV)
+  </div>
+  <div style="padding:8px 20px 4px;background:#eef2ff;font-size:12px;color:#555">
+    Entries built by correlating legs that tend to hit together — joint probability adjusted via Gaussian copula.
+    EV = (joint hit % × payout multiplier) &minus; 1. Only +EV entries shown.
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px">
+    <thead>
+      <tr style="background:#2c3e7a;color:#fff">
+        <th style="padding:6px 10px;text-align:left">Entry</th>
+        <th style="padding:6px 10px;text-align:left">Legs</th>
+        <th style="padding:6px 10px;text-align:center;width:80px">Joint Hit%</th>
+        <th style="padding:6px 10px;text-align:center;width:70px">Avg Corr</th>
+        <th style="padding:6px 10px;text-align:center;width:70px">EV/dollar</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
+  <div style="margin-bottom:12px"></div>"""
+
+
 def render_email_html(
     results_by_sport: dict[str, list[PropResult]],
     run_date: date,
@@ -164,6 +222,7 @@ def render_email_html(
     yesterday_section_html: str = "",
     tv_results_by_sport: dict | None = None,
     broadcast_coverage: dict | None = None,
+    suggested_entries: list | None = None,
 ) -> str:
     """
     results_by_sport: {"NBA": [...], "NHL": [...], ...} mapping sport name to sorted PropResult list.
@@ -222,8 +281,15 @@ def render_email_html(
     &#128202; All Picks (Highest Probability)
   </div>"""
 
+    suggested_section_html = render_suggested_entries_section(suggested_entries or [])
+
     # Build per-sport table sections (full, unfiltered)
-    sport_sections_html = tv_section_html + all_header_html + _render_sport_sections(results_by_sport)
+    sport_sections_html = (
+        tv_section_html
+        + all_header_html
+        + _render_sport_sections(results_by_sport)
+        + suggested_section_html
+    )
 
     total_props = len(all_results)
     n_sports = len([s for s, r in results_by_sport.items() if r])
@@ -434,6 +500,7 @@ def render_plain_text(
     yesterday_date: date | None = None,
     tv_results_by_sport: dict | None = None,
     broadcast_coverage: dict | None = None,
+    suggested_entries: list | None = None,
 ) -> str:
     lines = [
         f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
@@ -509,6 +576,22 @@ def render_plain_text(
 
     lines.append("==== 📊 ALL PICKS (HIGHEST PROBABILITY) ====")
     lines += _plain_sport_blocks(results_by_sport)
+
+    if suggested_entries:
+        lines += ["", "==== 🎰 SUGGESTED POWER PLAYS (+EV, correlation-adjusted) ====", ""]
+        for e in suggested_entries:
+            ev_pct = (e.expected_value or 0.0) * 100.0
+            lines.append(
+                f"  {len(e.legs)}-Pick Power  |  Hit {e.joint_probability*100:.1f}%  |  "
+                f"Corr {e.avg_correlation:+.2f}  |  EV {ev_pct:+.1f}%"
+            )
+            for lg in e.legs:
+                direction = "OVER " if lg.direction == "OVER" else "UNDER"
+                lines.append(
+                    f"    {lg.player_name:<22} {direction} {lg.stat_type:<14} "
+                    f"{lg.line:<6.1f} ({lg.hit_probability:.0f}%)"
+                )
+            lines.append("")
 
     lines += ["Data: stats.nba.com + nhle.com + mlb.com | Lines: PrizePicks",
               "Not financial advice."]

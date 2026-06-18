@@ -102,13 +102,23 @@ class PropAnalyzer:
         self._team_id_to_abbr = self._schedule.get_team_id_to_abbr()
         self._todays_games = self._schedule.get_todays_games(sport_key=sport_key)
 
+        # Effective market blend weight: use auto-tuned value from calibrator when
+        # available; fall back to the config constant otherwise.
+        corr = self._corrections
+        _eff_blend = (
+            corr.market_blend_weight
+            if (corr is not None and getattr(corr, "market_blend_weight", None) is not None)
+            else MARKET_BLEND_WEIGHT
+        )
+        self._market_blend_weight: float = _eff_blend
+
         # Market-odds anchor: pre-fetch a devigged sharp probability per prop so
         # each model probability can be blended toward the market.  Two sources,
         # consensus preferred:
         #   1. The Odds API — multi-book US consensus (most robust; carries n_books)
         #   2. DraftKings   — single-book fallback when the Odds API is unavailable
         # Fully graceful — an empty map means the model simply runs unanchored.
-        if MARKET_BLEND_WEIGHT > 0:
+        if self._market_blend_weight > 0:
             self._market_odds = self._prefetch_market_odds()
 
         # Teammate-injury usage boost: one bulk fetch of sidelined players per
@@ -517,7 +527,7 @@ class PropAnalyzer:
                     stat_type, predicted, stat_series,
                 )
             if market_over is not None:
-                w = _market.dynamic_weight(MARKET_BLEND_WEIGHT, n_books)
+                w = _market.dynamic_weight(self._market_blend_weight, n_books)
                 over_prob = _market.blend(over_prob, market_over, w)
                 logger.debug(
                     "%s %s: blended model→market %.1f%% "

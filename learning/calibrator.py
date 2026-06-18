@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 
+from analysis import backtest as _backtest
 from learning.history_store import HistoryStore, FACTOR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class Corrections:
     player_bias: dict[tuple, float] = field(default_factory=dict)
     brier_score: float | None = None
     has_sufficient_data: bool = False
+    market_blend_weight: float | None = None  # auto-tuned blend weight (overrides config when set)
 
 
 class Calibrator:
@@ -87,11 +89,14 @@ class Calibrator:
 
         self._store.save_factor_weights(new_weights, contributions, sample_sizes, run_date, sport=self._sport)
 
+        market_blend_weight = self._compute_market_blend_weight(rows)
+
         logger.info(
-            "Calibrator: cal_buckets=%d  stat_biases=%d  weights=%s",
+            "Calibrator: cal_buckets=%d  stat_biases=%d  weights=%s  market_blend=%.3f",
             len(calibration_map),
             len(stat_type_bias),
             {k: round(v, 3) for k, v in new_weights.items()},
+            market_blend_weight if market_blend_weight is not None else float("nan"),
         )
 
         return Corrections(
@@ -101,6 +106,7 @@ class Calibrator:
             player_bias=player_bias,
             brier_score=brier,
             has_sufficient_data=True,
+            market_blend_weight=market_blend_weight,
         )
 
     # ------------------------------------------------------------------
@@ -264,6 +270,43 @@ class Calibrator:
                 result[key] = max(-MAX_CORRECTION, min(MAX_CORRECTION, bias))
 
         return result
+
+    # ------------------------------------------------------------------
+    # Market blend weight — auto-tuned from market agreement vs model accuracy
+    # ------------------------------------------------------------------
+
+    def _compute_market_blend_weight(self, rows: list[dict]) -> float | None:
+        """Adjust MARKET_BLEND_WEIGHT based on whether market or model is more accurate.
+
+        If market accuracy > model accuracy by a meaningful margin, increase the blend;
+        if model is better, decrease it. Returns None when there's insufficient data.
+        """
+        from config import MARKET_BLEND_WEIGHT
+
+        # Need at least 30 rows with market data for a stable signal.
+        market_info = _backtest.market_agreement(rows)
+        if market_info is None or market_info.get("n", 0) < 30:
+            return None
+
+        market_acc = market_info["market_accuracy"]  # 0-100
+
+        graded = [r for r in rows if r.get("correct") in (0, 1)]
+        if not graded:
+            return None
+        model_acc = sum(1 for r in graded if r["correct"] == 1) / len(graded) * 100.0
+
+        gap = market_acc - model_acc  # positive → market beats model
+
+        # Each 5pp gap moves weight by 0.05, capped at ±0.15 shift from config default.
+        shift = max(-0.15, min(0.15, gap / 5.0 * 0.05))
+        new_weight = max(0.20, min(0.85, MARKET_BLEND_WEIGHT + shift))
+
+        logger.info(
+            "Calibrator: market_acc=%.1f%%  model_acc=%.1f%%  gap=%.1fpp  "
+            "market_blend: %.2f → %.2f",
+            market_acc, model_acc, gap, MARKET_BLEND_WEIGHT, new_weight,
+        )
+        return new_weight
 
     # ------------------------------------------------------------------
     # Brier score (B3) — model calibration quality metric
