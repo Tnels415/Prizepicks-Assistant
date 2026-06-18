@@ -10,7 +10,10 @@ from data.base_stats_client import BaseStatsClient
 from data.schedule_client import ScheduleClient
 import analysis.distribution_model as _dist_model
 from data.news_client import get_player_news_sentiment
-from data.injury_client import get_player_injury_status, classify_injury_severity
+from data.injury_client import (
+    get_player_injury_status, classify_injury_severity, get_team_out_players,
+)
+from analysis import usage_boost as _usage_boost
 from analysis.historical_stats import HistoricalStatsCalculator
 from analysis.factor_scorer import FactorScorer
 from analysis.watchability import watchable_label
@@ -88,6 +91,7 @@ class PropAnalyzer:
         self._team_id_to_abbr: dict[int, str] = {}
         self._todays_games: list[dict] = []
         self._market_odds: dict[tuple[str, str], dict] = {}
+        self._team_out: dict[str, list[tuple[str, str]]] = {}
 
     def analyze_all_props(self, props: list[dict]) -> list[PropResult]:
         sport_key = self._sport["odds_sport_key"]
@@ -106,6 +110,16 @@ class PropAnalyzer:
         # Fully graceful — an empty map means the model simply runs unanchored.
         if MARKET_BLEND_WEIGHT > 0:
             self._market_odds = self._prefetch_market_odds()
+
+        # Teammate-injury usage boost: one bulk fetch of sidelined players per
+        # team, reused across every prop.  Empty map → boost is a no-op.
+        try:
+            self._team_out = get_team_out_players(
+                self._sport["name"], self._sport.get("team_name_to_abbr"),
+            )
+        except Exception as exc:
+            logger.warning("Team-out fetch failed (%s) — usage boost disabled", exc)
+            self._team_out = {}
 
         results: list[PropResult] = []
         seen_players: dict[str, pd.DataFrame] = {}
@@ -387,6 +401,25 @@ class PropAnalyzer:
             avgs["last_5_avg"], avgs["last_10_avg"], avgs["season_avg"]
         )
 
+        # --- Teammate-injury usage boost -------------------------------------
+        # Sidelined teammates redistribute usage; nudge the projected mean up for
+        # counting stats so the distribution base reflects the larger role.  This
+        # flows through to P(over) via the fitted distribution below.
+        out_teammates = [
+            (n, sev) for (n, sev) in self._team_out.get(team_abbr.upper(), [])
+            if n.lower() != player_name.lower()
+        ]
+        usage_mult = _usage_boost.usage_boost_multiplier(
+            out_teammates, stat_type, self._sport
+        )
+        if usage_mult > 1.0:
+            predicted = round(predicted * usage_mult, 1)
+            logger.info(
+                "%s %s: usage boost ×%.3f (%d teammate(s) out: %s) → mean %.1f",
+                player_name, stat_type, usage_mult, len(out_teammates),
+                ", ".join(n for n, _ in out_teammates), predicted,
+            )
+
         # --- Distribution-based probability base (Phase 1) -------------------
         # Replace the raw hit_rate_20 * 100 base with P(over) from a fitted
         # Negative Binomial (small-count stats) or Gaussian (continuous/large).
@@ -514,6 +547,15 @@ class PropAnalyzer:
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)
+
+        # Surface the usage boost as a leading factor — it's actionable context
+        # the user wants to see ("why is this player projected higher than usual").
+        if usage_mult > 1.0:
+            names = ", ".join(n for n, _ in out_teammates[:2])
+            key_factors.insert(
+                0, f"Usage boost +{(usage_mult - 1.0) * 100:.0f}% ({names} out)"
+            )
+            key_factors = key_factors[:5]
 
         base_kwargs = dict(
             player_name=player_name,

@@ -503,6 +503,13 @@ MARKET_ODDS_MAX_REQUESTS_PER_RUN = 30  # hard cap to protect the free-tier quota
 INJURY_QUESTIONABLE_SHRINK = 0.30
 INJURY_PROBABLE_SHRINK = 0.10
 
+# Teammate-injury usage boost — when a player's teammates are OUT/doubtful, his
+# usage rises, so his projected mean for counting stats is nudged up.  Magnitude
+# is intentionally modest and capped; tune via the backtest harness.
+USAGE_BOOST_PER_TEAMMATE_OUT = 0.05   # +5% to projected mean per weighted absence
+USAGE_BOOST_DOUBTFUL_WEIGHT = 0.5     # a "doubtful" teammate counts as half an absence
+USAGE_BOOST_MAX = 0.12                # cap total boost at +12%
+
 # Phase 3: edge + tiering
 # PrizePicks break-even per leg depends on entry type. Public no-vig analysis
 # puts 5-/6-leg flex break-even near ~52% (and correlated legs lower it further),

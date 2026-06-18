@@ -66,6 +66,9 @@ _CACHE_TTL = 3600  # 1 hour
 _BULK_CACHE: dict[tuple[str, str], tuple[dict[str, str] | None, float]] = {}
 _BULK_CACHE_TTL = 900  # 15 minutes — short enough to pick up intra-day changes
 
+# Team-grouped out/doubtful map cache: (sport_slug, league_slug) → ({abbr: [...]}, ts)
+_TEAM_OUT_CACHE: dict[tuple[str, str], tuple[dict[str, list[tuple[str, str]]], float]] = {}
+
 _INJURY_API_UNAVAILABLE: bool = False
 
 
@@ -129,6 +132,78 @@ def _fetch_espn_injury_map(sport_slug: str, league_slug: str) -> dict[str, str] 
         # Cache the failure briefly so we don't hammer on every prop check
         _BULK_CACHE[cache_key] = (None, now)
         return None
+
+
+def get_team_out_players(
+    sport: str, team_name_to_abbr: dict[str, str] | None = None
+) -> dict[str, list[tuple[str, str]]]:
+    """Return {team_abbr_upper: [(player_name, severity), ...]} for sidelined players.
+
+    Only players whose severity is "out" or "doubtful" are included — these are
+    the absences that redistribute usage to teammates.  Built from the same bulk
+    ESPN injuries endpoint (one request, cached), grouped by team.  Returns an
+    empty dict on any failure so the usage-boost step degrades to a no-op.
+
+    team_name_to_abbr maps ESPN's full team names to our abbreviations; when a
+    team block already exposes an abbreviation we use it directly.
+    """
+    slugs = _SPORT_ESPN_MAP.get(sport)
+    if slugs is None:
+        return {}
+    sport_slug, league_slug = slugs
+    name_map = team_name_to_abbr or {}
+
+    if _INJURY_API_UNAVAILABLE:
+        return {}
+
+    cache_key = (sport_slug, league_slug)
+    now = time.time()
+    # Reuse the bulk cache's freshness by triggering a fetch if needed; the team
+    # grouping itself is cheap so we recompute it from the cached raw response.
+    cached = _TEAM_OUT_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _BULK_CACHE_TTL:
+        return cached[0]
+
+    try:
+        url = _ESPN_INJURIES_URL.format(sport=sport_slug, league=league_slug)
+        resp = requests.get(url, headers=_ESPN_HEADERS, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.info("ESPN team-out fetch failed (%s/%s): %s", sport_slug, league_slug, exc)
+        _TEAM_OUT_CACHE[cache_key] = ({}, now)
+        return {}
+
+    out_map: dict[str, list[tuple[str, str]]] = {}
+    for team_block in data.get("injuries", []):
+        # Resolve the team abbreviation defensively across response shapes.
+        abbr = (
+            team_block.get("abbreviation")
+            or (team_block.get("team", {}) or {}).get("abbreviation")
+            or name_map.get(team_block.get("displayName", ""), "")
+        )
+        abbr = str(abbr).upper()
+        for injury in team_block.get("injuries", []):
+            athlete = injury.get("athlete", {})
+            name = str(athlete.get("displayName", "")).strip()
+            if not name:
+                continue
+            if not abbr:
+                abbr = str((athlete.get("team", {}) or {}).get("abbreviation", "")).upper()
+            designation = (
+                injury.get("status") or injury.get("type")
+                or athlete.get("injuryStatus") or "Injured"
+            )
+            severity = classify_injury_severity(str(designation))
+            if severity in ("out", "doubtful") and abbr:
+                out_map.setdefault(abbr, []).append((name, severity))
+
+    logger.info(
+        "ESPN team-out map (%s): %d team(s) with sidelined players",
+        sport, len(out_map),
+    )
+    _TEAM_OUT_CACHE[cache_key] = (out_map, now)
+    return out_map
 
 
 def _espn_athlete_id(player_name: str, sport_slug: str, league_slug: str) -> str | None:
