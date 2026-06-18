@@ -29,6 +29,7 @@ from data.nhl_stats_client import NHLStatsClient
 from data.mlb_stats_client import MLBStatsClient
 from data.nfl_stats_client import NFLStatsClient
 from analysis.prop_analyzer import PropAnalyzer, PropResult, rank_and_tier
+from analysis import correlation as _correlation
 from analysis.watchability import is_watchable
 from learning.history_store import HistoryStore
 from learning.outcome_fetcher import OutcomeFetcher
@@ -445,11 +446,49 @@ def main() -> int:
                 f"{direction_label} {r.stat_type:<14} Line:{r.line:<6.1f} "
                 f"Prob:{r.hit_probability:.0f}%"
             )
+    # --- Suggested correlated power-play entries ---------------------------
+    _print_suggested_entries(results_by_sport)
+
     print("\n" + "=" * 60)
     print(f"Report emailed to {cfg['email_to']}")
     print(f"Total runtime: {duration:.1f}s\n")
 
     return 0
+
+
+def _print_suggested_entries(results_by_sport: dict[str, list]) -> None:
+    """Build and print correlation-aware power-play entries from the day's picks."""
+    from config import POWER_PLAY_PAYOUTS, SUGGESTED_ENTRY_SIZES
+
+    # Combine every sport's A-tier-first ranking into one candidate pool.
+    combined: list = []
+    for sport_results in results_by_sport.values():
+        combined.extend(sport_results)
+    candidates = rank_and_tier(combined)[:20]
+    if len(candidates) < min(SUGGESTED_ENTRY_SIZES):
+        return
+
+    entries = _correlation.recommend_power_entries(
+        candidates, SUGGESTED_ENTRY_SIZES, POWER_PLAY_PAYOUTS, min_ev=0.0
+    )
+    if not entries:
+        return
+
+    print("\n" + "=" * 60)
+    print("SUGGESTED CORRELATED POWER PLAYS (+EV, correlation-adjusted)")
+    print("=" * 60)
+    for e in entries:
+        ev_pct = (e.expected_value or 0.0) * 100.0
+        print(
+            f"\n  {len(e.legs)}-pick power  |  hit {e.joint_probability * 100:.1f}%  |  "
+            f"corr {e.avg_correlation:+.2f}  |  EV {ev_pct:+.1f}%"
+        )
+        for lg in e.legs:
+            direction = "OVER " if lg.direction == "OVER" else "UNDER"
+            print(
+                f"      {lg.player_name:<22} {direction} {lg.stat_type:<14} "
+                f"{lg.line:<6.1f} ({lg.hit_probability:.0f}%)"
+            )
 
 
 if __name__ == "__main__":

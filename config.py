@@ -519,3 +519,15 @@ PRIZEPICKS_BREAKEVEN = 0.54         # per-leg flex break-even (5-/6-leg flex)
 A_TIER_MIN_PROB = 60.0              # minimum hit_probability (%) to qualify for A-tier
 A_TIER_MIN_EDGE = 0.06              # minimum edge above break-even to qualify
 MIN_GAMES_FOR_A_TIER = 8            # minimum games_analyzed for A-tier eligibility
+
+# PrizePicks Power Play payout multipliers by entry size (all legs must hit).
+# Public standard payouts; verify in-app as PrizePicks adjusts promos.
+POWER_PLAY_PAYOUTS: dict[int, float] = {
+    2: 3.0,
+    3: 5.0,
+    4: 10.0,
+    5: 20.0,
+    6: 37.5,
+}
+# Entry sizes to suggest correlated power-play builds for.
+SUGGESTED_ENTRY_SIZES: tuple[int, ...] = (2, 3)
