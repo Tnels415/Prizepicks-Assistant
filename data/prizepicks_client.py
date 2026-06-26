@@ -673,12 +673,12 @@ PROPS_FILE_INSTRUCTIONS = """
 =======================================================
   ACTION REQUIRED: No prop lines available today
 =======================================================
-PrizePicks API did not return props (may be temporarily
-unavailable or blocking automated requests).
+All live prop sources (PrizePicks, DraftKings, Underdog,
+FanDuel) returned no data or are temporarily unavailable.
 A props.json file has been created for you to fill in.
 
-Fill props.json manually with today's PrizePicks lines,
-then re-run: python3 main.py
+Fill props.json manually with today's lines from any
+sportsbook, then re-run: python3 main.py
 
 props.json format (remove these examples first):
   [
@@ -776,7 +776,8 @@ class PropLineClient:
             self._write_template()
             if reason == PrizePicksLiveClient._REASON_BLOCKED:
                 print(
-                    "\n[PrizePicks BLOCKED] The API is blocking requests from this machine.\n"
+                    "\n[PROP SOURCES BLOCKED] All sportsbook APIs are blocking requests from "
+                    "this machine.\n"
                     "This is usually temporary. Options:\n"
                     "  1. Wait 1–2 hours and re-run\n"
                     "  2. Install curl-cffi for better bypass:  pip3 install curl-cffi\n"
@@ -784,7 +785,7 @@ class PropLineClient:
                 )
             elif reason == PrizePicksLiveClient._REASON_NOT_POSTED:
                 print(
-                    "\n[PrizePicks NOT POSTED] PrizePicks hasn't posted today's lines yet.\n"
+                    "\n[LINES NOT POSTED] Prop lines haven't been posted yet today.\n"
                     "Lines usually appear after 11 AM–1 PM ET.\n"
                     "  1. Re-run after noon:  python3 main.py\n"
                     "  2. Or fill props.json manually (see instructions below)\n"
@@ -819,9 +820,9 @@ class PropLineClient:
                 props.append(parsed)
 
         logger.warning(
-            "PrizePicks API unavailable — loaded %d %s props from props.json. "
-            "Lines in this file may not match current PrizePicks lines. "
-            "Update props.json with today's PrizePicks lines before using these picks.",
+            "All live prop sources unavailable — loaded %d %s props from props.json. "
+            "Lines in this file may be outdated. "
+            "Update props.json with today's current lines before using these picks.",
             len(props), sport_name,
         )
         return props

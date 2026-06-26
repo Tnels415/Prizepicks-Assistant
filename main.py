@@ -227,8 +227,9 @@ def main() -> int:
         props = preloaded_props if preloaded_props is not None else odds_client.fetch_props(sport_cfg)
         if not props:
             logger.warning(
-                "No %s props loaded — PrizePicks API unavailable and props.json is empty. "
-                "Fill props.json with today's PrizePicks lines and re-run.",
+                "No %s props loaded — all prop sources exhausted "
+                "(PrizePicks, DraftKings, Underdog, FanDuel) and props.json is empty. "
+                "Fill props.json with today's lines and re-run.",
                 sport_name,
             )
             props_failed_sports.append(sport_name)
@@ -324,15 +325,15 @@ def main() -> int:
             # Every sport with games today had props loading fail — it's a data source issue
             logger.error(
                 "No prop lines could be loaded for any sport (%s). "
-                "The PrizePicks API is currently unavailable. "
-                "Manually fill props.json with today's PrizePicks lines and re-run.",
+                "All prop sources were tried (PrizePicks, DraftKings, Underdog, FanDuel) "
+                "and returned no data. Manually fill props.json with today's lines and re-run.",
                 ", ".join(props_failed_sports),
             )
             msg = (
-                "No prop lines were available today — the PrizePicks API is currently "
-                "unavailable.<br><br>"
+                "No prop lines were available today — all sportsbook sources "
+                "(PrizePicks, DraftKings, Underdog Fantasy, FanDuel) returned no data.<br><br>"
                 "<b>To fix:</b> manually fill <code>props.json</code> with today's "
-                "PrizePicks lines and re-run."
+                "lines and re-run."
             )
         else:
             logger.error(
