@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 PROPS_FILE = Path("props.json")
 
 
+def _normalize_player_name(name: str) -> str:
+    """Normalize a player name for cross-source de-duplication when merging
+    props from multiple books (e.g. "Luka Dončić" vs "Luka Doncic")."""
+    try:
+        from data.draftkings_client import _normalize_name
+        return _normalize_name(name)
+    except Exception:
+        return (name or "").strip().lower()
+
+
 # Module-level cache of PrizePicks league name → ID, fetched lazily on first
 # request.  Avoids hardcoding league_ids that PrizePicks may change.
 _PP_LEAGUE_MAP: dict[str, int] | None = None
@@ -730,24 +740,46 @@ class PropLineClient:
         # PrizePicks failed or returned nothing — immediately try other sources.
         # Do NOT block on NOT_POSTED retries first; other sportsbooks may have
         # lines even when PrizePicks hasn't posted yet.
+        #
+        # Gather from EVERY reachable book and merge by (player, stat) rather
+        # than returning the first source that yields anything — coverage is the
+        # union, so one book being down or thin doesn't shrink the slate.
         from data.draftkings_client import DraftKingsPropsClient
-        from data.external_props_client import UnderdogPropsClient, FanDuelPropsClient
+        from data.external_props_client import (
+            BovadaPropsClient,
+            UnderdogPropsClient,
+            FanDuelPropsClient,
+        )
 
+        merged: dict[tuple, dict] = {}
+        per_source_counts: dict[str, int] = {}
         for SourceClass, source_name in [
+            (BovadaPropsClient, "Bovada"),       # most reliable free feed first
             (DraftKingsPropsClient, "DraftKings"),
             (UnderdogPropsClient, "Underdog"),
             (FanDuelPropsClient, "FanDuel"),
         ]:
             try:
                 ext_props = SourceClass().fetch_props(sport_config)
-                if ext_props:
-                    logger.info(
-                        "Props loaded from %s (%d %s props)",
-                        source_name, len(ext_props), sport_name,
-                    )
-                    return ext_props
             except Exception as exc:
                 logger.warning("%s props fetch failed: %s", source_name, exc)
+                continue
+            added = 0
+            for p in ext_props or []:
+                key = (_normalize_player_name(p.get("player_name", "")), p.get("stat_type", ""))
+                if key not in merged:
+                    merged[key] = p
+                    added += 1
+            if added:
+                per_source_counts[source_name] = added
+
+        if merged:
+            logger.info(
+                "Loaded %d %s props from %d source(s): %s",
+                len(merged), sport_name, len(per_source_counts),
+                ", ".join(f"{s}={n}" for s, n in per_source_counts.items()),
+            )
+            return list(merged.values())
 
         # All live sources failed. If PrizePicks said lines aren't posted yet,
         # retry it a few times with a delay (gives PrizePicks time to post).

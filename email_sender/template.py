@@ -355,7 +355,7 @@ def render_email_html(
     home/away split (+5%), rest days (+4%), pace factor (+4%).
     NBA data sourced from stats.nba.com (via nba_api).
     NHL data sourced from api-web.nhle.com. MLB data sourced from statsapi.mlb.com.
-    Prop lines sourced from available sportsbooks (PrizePicks, DraftKings, Underdog Fantasy, FanDuel).
+    Prop lines sourced from available sportsbooks (PrizePicks, DraftKings, Underdog Fantasy, FanDuel, Bovada).
     H2H reflects current-season matchups only (zeroed if fewer than 2 games).
     </p>
     <p>Generated {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} &nbsp;|&nbsp;
@@ -401,6 +401,7 @@ def _render_row(r: PropResult) -> str:
         "DraftKings": ("#1a6b3c", "#e8f5ee"),
         "Underdog":   ("#c25c00", "#fff3e8"),
         "FanDuel":    ("#1155cc", "#e8f0ff"),
+        "Bovada":     ("#b3122a", "#fdeaed"),
     }
     fg, bg = SOURCE_COLORS.get(source, ("#555", "#f0f0f0"))
     source_chip = (

@@ -431,3 +431,235 @@ class FanDuelPropsClient:
         props = list(seen.values())
         logger.info("FanDuel: %d %s props parsed", len(props), sport_name)
         return props
+
+
+# ---------------------------------------------------------------------------
+# Bovada — public coupon API. Returns player props as plain JSON and is the
+# most reliable free source because it is not behind Cloudflare bot protection.
+# ---------------------------------------------------------------------------
+
+# Bovada URL path per sport (under .../events/A/description/<path>).
+BOVADA_SPORT_PATHS: dict[str, str] = {
+    "NBA": "basketball/nba",
+    "NHL": "hockey/nhl",
+    "NFL": "football/nfl",
+    "MLB": "baseball/mlb",
+}
+
+# Bovada market-description phrases → our internal stat_type. Matched
+# case-insensitively as a substring of the market description, so order
+# matters: list longer/more-specific phrases first.
+BOVADA_STAT_PHRASES: list[tuple[str, str]] = [
+    # NBA combos (check before single-stat substrings like "points")
+    ("points + rebounds + assists", "Pts+Reb+Ast"),
+    ("pts + reb + ast", "Pts+Reb+Ast"),
+    ("points + assists", "Pts+Ast"),
+    ("points + rebounds", "Pts+Reb"),
+    ("rebounds + assists", "Reb+Ast"),
+    ("blocks + steals", "Blks+Stls"),
+    ("steals + blocks", "Blks+Stls"),
+    # NBA singles
+    ("three point", "3-PT Made"),
+    ("3-point", "3-PT Made"),
+    ("3 point", "3-PT Made"),
+    ("threes made", "3-PT Made"),
+    ("rebounds", "Rebounds"),
+    ("assists", "Assists"),
+    ("steals", "Steals"),
+    ("blocks", "Blocks"),
+    ("turnovers", "Turnovers"),
+    ("points", "Points"),
+    # NHL
+    ("shots on goal", "Shots on Goal"),
+    ("power play points", "Power Play Points"),
+    ("goalie saves", "Goalie Saves"),
+    ("saves", "Goalie Saves"),
+    ("goals", "Goals"),
+    # MLB
+    ("home runs", "Home Runs"),
+    ("total bases", "Total Bases"),
+    ("runs batted in", "RBIs"),
+    ("rbis", "RBIs"),
+    ("stolen bases", "Stolen Bases"),
+    ("strikeouts", "Strikeouts"),
+    ("hits + runs + rbis", "Hits+Runs+RBIs"),
+    ("hits", "Hits"),
+    ("runs scored", "Runs Scored"),
+    ("walks", "Walks"),
+    ("doubles", "Doubles"),
+    # NFL
+    ("passing yards", "Passing Yards"),
+    ("passing touchdowns", "Passing TDs"),
+    ("passing tds", "Passing TDs"),
+    ("rushing yards", "Rushing Yards"),
+    ("receiving yards", "Receiving Yards"),
+    ("receptions", "Receptions"),
+    # NHL/general points last (very generic)
+    ("points", "Points"),
+]
+
+_BOVADA_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.bovada.lv/",
+}
+
+
+class BovadaPropsClient:
+    """Fetches player prop lines from Bovada's public coupon API (free, no key)."""
+
+    _BASE_URL = "https://www.bovada.lv/services/sports/event/coupon/events/A/description/{path}"
+
+    def fetch_props(self, sport_config: dict) -> list[dict]:
+        sport_name = sport_config["name"]
+        prop_stat_map = sport_config["prop_stat_map"]
+        path = BOVADA_SPORT_PATHS.get(sport_name)
+        if not path:
+            return []
+
+        url = self._BASE_URL.format(path=path)
+        params = {
+            "marketFilterId": "def",
+            "preMatchOnly": "true",
+            "eventsLimit": "100",
+            "lang": "en",
+        }
+
+        try:
+            data = _fetch_json(url, params, _BOVADA_HEADERS)
+        except Exception as exc:
+            logger.warning("Bovada fetch error for %s: %s", sport_name, exc)
+            return []
+
+        if not data:
+            return []
+
+        try:
+            return self._parse(data, sport_name, prop_stat_map)
+        except Exception as exc:
+            logger.warning("Bovada parse error for %s: %s", sport_name, exc)
+            return []
+
+    @staticmethod
+    def _match_stat(description: str, prop_stat_map: dict) -> str | None:
+        """Resolve a Bovada market description to an internal stat_type, or None.
+
+        The FIRST phrase that appears in the description wins — phrases are
+        ordered most-specific-first (combos before singles) so a combo market
+        like "Points + Rebounds + Assists" is identified as the combo, not
+        degraded to "Points". If that true stat is unsupported (combo mapped to
+        None, or not in our map) the whole market is skipped — we never relabel
+        it as a shorter substring stat.
+        """
+        lower = description.lower()
+        for phrase, stat in BOVADA_STAT_PHRASES:
+            if phrase in lower:
+                if stat in prop_stat_map and prop_stat_map[stat] is not None:
+                    return stat
+                return None  # real market, but unsupported stat — skip entirely
+        return None
+
+    @staticmethod
+    def _extract_player(description: str, stat_type: str) -> str:
+        """Pull the player name out of a Bovada market description.
+
+        Bovada formats vary: "Total Points - LeBron James",
+        "LeBron James - Total Points", or "LeBron James Total Points (Match)".
+        Strip the stat phrase and common decorations, keep the human name.
+        """
+        desc = description
+        # Remove parenthetical qualifiers e.g. "(Match)", "(Game)".
+        if "(" in desc:
+            desc = desc[: desc.index("(")]
+        # Split on " - " which Bovada commonly uses between stat and player.
+        if " - " in desc:
+            left, right = [p.strip() for p in desc.split(" - ", 1)]
+            # The player side is whichever does NOT contain a stat keyword.
+            left_is_stat = any(ph in left.lower() for ph, _ in BOVADA_STAT_PHRASES)
+            return right if left_is_stat else left
+        # No delimiter — strip any stat phrase substring out of the description.
+        cleaned = desc
+        for phrase, _ in BOVADA_STAT_PHRASES:
+            idx = cleaned.lower().find(phrase)
+            if idx != -1:
+                cleaned = (cleaned[:idx] + cleaned[idx + len(phrase):]).strip()
+        # Drop leading "Total"/"Player" qualifiers.
+        for lead in ("Total ", "Player ", "Alt "):
+            if cleaned.startswith(lead):
+                cleaned = cleaned[len(lead):]
+        return cleaned.strip(" -–")
+
+    def _parse(self, data, sport_name: str, prop_stat_map: dict) -> list[dict]:
+        today = date.today()
+        seen: dict[tuple, dict] = {}
+
+        # Bovada returns a list of coupon objects, each with an "events" array.
+        coupons = data if isinstance(data, list) else [data]
+        for coupon in coupons:
+            if not isinstance(coupon, dict):
+                continue
+            for event in coupon.get("events", []):
+                try:
+                    home_abbr, away_abbr = "", ""
+                    for comp in event.get("competitors", []):
+                        if comp.get("home"):
+                            home_abbr = comp.get("name", "")
+                        else:
+                            away_abbr = comp.get("name", "")
+
+                    for group in event.get("displayGroups", []):
+                        for market in group.get("markets", []):
+                            desc = market.get("description", "") or ""
+                            stat_type = self._match_stat(desc, prop_stat_map)
+                            if not stat_type:
+                                continue
+
+                            # Prefer the Over outcome — it carries the line.
+                            over = None
+                            for o in market.get("outcomes", []):
+                                if str(o.get("description", "")).lower().startswith("over"):
+                                    over = o
+                                    break
+                            if over is None:
+                                continue
+
+                            handicap = (over.get("price") or {}).get("handicap")
+                            if handicap is None:
+                                continue
+                            try:
+                                line = float(handicap)
+                            except (TypeError, ValueError):
+                                continue
+
+                            player_name = self._extract_player(desc, stat_type)
+                            # Some markets put the player on the outcome instead.
+                            if not player_name:
+                                player_name = str(over.get("description", "")).strip()
+                            if not player_name or player_name.lower() in ("over", "under"):
+                                continue
+
+                            key = (player_name, stat_type)
+                            if key not in seen:
+                                seen[key] = {
+                                    "sport": sport_name,
+                                    "projection_id": str(market.get("id", len(seen))),
+                                    "player_name": player_name,
+                                    "team_abbr": "",
+                                    "event_home_abbr": home_abbr,
+                                    "event_away_abbr": away_abbr,
+                                    "position": "",
+                                    "stat_type": stat_type,
+                                    "line": line,
+                                    "start_time": "",
+                                    "pick_type": "standard",
+                                    "n_variants": 1,
+                                    "from_multiple_lines": False,
+                                    "prop_source": "Bovada",
+                                }
+                except Exception:
+                    continue
+
+        props = list(seen.values())
+        logger.info("Bovada: %d %s props parsed", len(props), sport_name)
+        return props

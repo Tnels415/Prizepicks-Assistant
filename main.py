@@ -228,7 +228,7 @@ def main() -> int:
         if not props:
             logger.warning(
                 "No %s props loaded — all prop sources exhausted "
-                "(PrizePicks, DraftKings, Underdog, FanDuel) and props.json is empty. "
+                "(PrizePicks, DraftKings, Underdog, FanDuel, Bovada) and props.json is empty. "
                 "Fill props.json with today's lines and re-run.",
                 sport_name,
             )
@@ -325,7 +325,7 @@ def main() -> int:
             # Every sport with games today had props loading fail — it's a data source issue
             logger.error(
                 "No prop lines could be loaded for any sport (%s). "
-                "All prop sources were tried (PrizePicks, DraftKings, Underdog, FanDuel) "
+                "All prop sources were tried (PrizePicks, DraftKings, Underdog, FanDuel, Bovada) "
                 "and returned no data. Manually fill props.json with today's lines and re-run.",
                 ", ".join(props_failed_sports),
             )
