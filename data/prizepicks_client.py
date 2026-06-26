@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import subprocess
 import time
 from datetime import date, timezone
+from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 
 try:
-    # curl_cffi impersonates a real browser TLS fingerprint, which defeats most
-    # Cloudflare bot-detection blocks that plain `requests` triggers.
     from curl_cffi import requests as _cf_requests
     _HAS_CURL_CFFI = True
 except ImportError:
-    import requests as _cf_requests   # type: ignore[no-redef]
     _HAS_CURL_CFFI = False
+
+try:
+    import browser_cookie3 as _browser_cookie3
+    _HAS_BROWSER_COOKIES = True
+except ImportError:
+    _HAS_BROWSER_COOKIES = False
 
 import requests
 
@@ -130,6 +136,80 @@ class PrizePicksLiveClient:
     _REASON_NOT_POSTED = "not_posted" # API returned 200 but 0 usable props
     _REASON_ERROR = "error"           # network / parse error
 
+    @staticmethod
+    def _get_browser_cookies() -> dict[str, str]:
+        """Extract PrizePicks cookies from the user's installed browser.
+
+        Uses browser_cookie3 when available.  Falls back to an empty dict
+        gracefully — the rest of the fetch logic still runs without cookies.
+        """
+        if not _HAS_BROWSER_COOKIES:
+            return {}
+        domain = "prizepicks.com"
+        for browser_fn_name in ("chrome", "chromium", "safari", "firefox", "edge", "brave"):
+            try:
+                fn = getattr(_browser_cookie3, browser_fn_name)
+                cj = fn(domain_name=domain)
+                cookies = {c.name: c.value for c in cj if domain in c.domain}
+                if cookies:
+                    logger.debug(
+                        "PrizePicks: extracted %d cookies from %s browser",
+                        len(cookies), browser_fn_name,
+                    )
+                    return cookies
+            except Exception:
+                continue
+        return {}
+
+    @staticmethod
+    def _fetch_via_system_curl(url: str, params: dict, headers: dict, cookies: dict) -> bytes | None:
+        """Fetch url using the system `curl` binary.
+
+        System curl on macOS uses Apple SecureTransport (a completely different
+        TLS stack from Python's ssl module), so its JA3 fingerprint looks like a
+        real browser to Cloudflare.  On Linux it uses the system OpenSSL build,
+        which is also distinct from Python's bundled one.
+
+        Returns raw response bytes on success, None on any error.
+        """
+        curl_path = shutil.which("curl")
+        if not curl_path:
+            return None
+
+        # Build query string
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        full_url = f"{url}?{qs}"
+
+        cmd = [curl_path, "-s", "--max-time", "25", "--compressed", full_url]
+        for k, v in headers.items():
+            cmd += ["-H", f"{k}: {v}"]
+        if cookies:
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+            cmd += ["-H", f"Cookie: {cookie_str}"]
+        # Write HTTP response code to stderr-adjacent output so we can check it
+        cmd += ["-w", "\n__STATUS__:%{http_code}"]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            output = result.stdout.decode("utf-8", errors="replace")
+            # Split off the appended status code
+            if "\n__STATUS__:" in output:
+                body, status_str = output.rsplit("\n__STATUS__:", 1)
+                status = int(status_str.strip())
+            else:
+                body = output
+                status = 0
+            if status == 200:
+                return body.encode("utf-8")
+            logger.warning(
+                "PrizePicks system curl returned HTTP %d — %s",
+                status, "bot block (403)" if status == 403 else "unexpected status",
+            )
+            return None
+        except Exception as exc:
+            logger.debug("PrizePicks system curl failed: %s", exc)
+            return None
+
     def fetch_props(self, sport_config: dict) -> tuple[list[dict], str]:
         """Return (props, reason) where reason is one of the _REASON_* constants."""
         sport_name = sport_config["name"]
@@ -166,10 +246,17 @@ class PrizePicksLiveClient:
         """Try all HTTP strategies and return (props, reason)."""
         sport_name = sport_config["name"]
         params = {"league_id": league_id, "per_page": 250, "single_stat": "true"}
-        got_any_200 = False  # track whether we ever got a non-403 response
+        got_any_200 = False
 
-        def _handle_200(resp, label: str) -> tuple[list[dict], str]:
-            data = resp.json()
+        def _handle_raw(raw_bytes: bytes, label: str) -> tuple[list[dict], str] | None:
+            """Parse raw JSON bytes; return result tuple or None on parse error."""
+            nonlocal got_any_200
+            got_any_200 = True
+            try:
+                data = json.loads(raw_bytes)
+            except Exception as exc:
+                logger.warning("PrizePicks %s (%s): JSON parse error: %s", sport_name, label, exc)
+                return None
             props = self._parse(data, sport_config)
             if props:
                 logger.info(
@@ -177,62 +264,75 @@ class PrizePicksLiveClient:
                     len(props), sport_name, label, league_id,
                 )
                 return props, self._REASON_OK
-            # 200 but 0 usable props
             logger.warning(
-                "PrizePicks %s (league_id=%s): API responded 200 OK via %s "
-                "but returned 0 usable props. "
-                "Lines may not have been posted yet (PrizePicks usually posts "
-                "after ~11 AM ET). Try re-running after noon, or fill props.json manually.",
+                "PrizePicks %s (league_id=%s) via %s: 200 OK but 0 usable props. "
+                "PrizePicks may not have posted today's lines yet (usually after "
+                "~11 AM ET). Try re-running after noon, or fill props.json manually.",
                 sport_name, league_id, label,
             )
             return [], self._REASON_NOT_POSTED
 
-        # --- Strategy 1: curl_cffi — real browser TLS fingerprint ---------------
+        # Grab browser cookies once — used by all strategies that can accept them.
+        browser_cookies = self._get_browser_cookies()
+        if browser_cookies:
+            logger.debug("PrizePicks: using %d cookie(s) from local browser", len(browser_cookies))
+
+        # --- Strategy 1: system curl (native TLS stack — macOS SecureTransport /
+        #     Linux OpenSSL build — different JA3 fingerprint from Python ssl) ---
+        raw = self._fetch_via_system_curl(PRIZEPICKS_URL, params, _PP_BASE_HEADERS, browser_cookies)
+        if raw is not None:
+            result = _handle_raw(raw, "system-curl")
+            if result is not None:
+                return result
+
+        # --- Strategy 2: curl_cffi — Python browser TLS impersonation ----------
         if _HAS_CURL_CFFI:
             for browser in _CURL_CFFI_BROWSERS:
                 try:
                     session = _cf_requests.Session(impersonate=browser)
-                    # Prime session with a homepage visit to collect cookies.
+                    if browser_cookies:
+                        session.cookies.update(browser_cookies)
                     try:
                         session.get("https://app.prizepicks.com/", headers=_PP_BASE_HEADERS, timeout=10)
-                        time.sleep(1.5)
+                        time.sleep(1)
                     except Exception:
                         pass
                     resp = session.get(PRIZEPICKS_URL, params=params, headers=_PP_BASE_HEADERS, timeout=20)
                     if resp.status_code == 403:
                         logger.warning(
-                            "PrizePicks %s: 403 via curl_cffi/%s — Cloudflare bot block. "
-                            "Trying next browser fingerprint.",
+                            "PrizePicks %s: 403 via curl_cffi/%s. Trying next fingerprint.",
                             sport_name, browser,
                         )
                         time.sleep(2)
                         continue
                     resp.raise_for_status()
-                    got_any_200 = True
-                    return _handle_200(resp, f"curl_cffi/{browser}")
+                    result = _handle_raw(resp.content, f"curl_cffi/{browser}")
+                    if result is not None:
+                        return result
                 except Exception as exc:
                     logger.debug("PrizePicks curl_cffi/%s error for %s: %s", browser, sport_name, exc)
         else:
-            logger.debug(
-                "curl_cffi not installed — skipping TLS-fingerprint strategy. "
-                "Install with: pip3 install curl-cffi"
-            )
+            logger.debug("curl_cffi not installed — skipping (pip3 install curl-cffi to enable)")
 
-        # --- Strategy 2: plain requests — varied headers -----------------------
-        for i, headers in enumerate(_PP_HEADER_VARIANTS):
+        # --- Strategy 3: plain requests — varied headers -----------------------
+        for i, hdrs in enumerate(_PP_HEADER_VARIANTS):
+            merged = {**hdrs}
             try:
-                resp = requests.get(PRIZEPICKS_URL, params=params, headers=headers, timeout=20)
+                s = requests.Session()
+                if browser_cookies:
+                    s.cookies.update(browser_cookies)
+                resp = s.get(PRIZEPICKS_URL, params=params, headers=merged, timeout=20)
                 if resp.status_code == 403:
                     logger.warning(
-                        "PrizePicks %s: 403 via requests/variant-%d — bot block. "
-                        "Trying next header set.",
+                        "PrizePicks %s: 403 via requests/variant-%d. Trying next.",
                         sport_name, i + 1,
                     )
                     time.sleep(2)
                     continue
                 resp.raise_for_status()
-                got_any_200 = True
-                return _handle_200(resp, f"requests/variant-{i+1}")
+                result = _handle_raw(resp.content, f"requests/variant-{i+1}")
+                if result is not None:
+                    return result
             except requests.exceptions.HTTPError:
                 continue
             except Exception as exc:
@@ -243,13 +343,13 @@ class PrizePicksLiveClient:
             return [], self._REASON_NOT_POSTED
 
         logger.warning(
-            "PrizePicks %s (league_id=%s): all %d request strategies returned 403. "
-            "PrizePicks is blocking automated requests from this machine/IP. "
-            "Possible fixes: (1) wait and retry — blocks are sometimes temporary; "
-            "(2) install curl-cffi: pip3 install curl-cffi; "
-            "(3) fill props.json manually with today's lines.",
+            "PrizePicks %s (league_id=%s): all strategies returned 403. "
+            "Possible fixes:\n"
+            "  1. Open PrizePicks in your browser (sets cookies), then re-run.\n"
+            "  2. Install curl-cffi:  pip3 install curl-cffi\n"
+            "  3. Install browser_cookie3:  pip3 install browser-cookie3\n"
+            "  4. Fill props.json manually with today's lines.",
             sport_name, league_id,
-            len(_CURL_CFFI_BROWSERS if _HAS_CURL_CFFI else []) + len(_PP_HEADER_VARIANTS),
         )
         return [], self._REASON_BLOCKED
 
@@ -280,8 +380,8 @@ class PrizePicksLiveClient:
         """Fetch the public PrizePicks /leagues endpoint and return name → id map."""
         url = "https://api.prizepicks.com/leagues"
 
-        def _parse_leagues(resp) -> dict[str, int]:
-            data = resp.json()
+        def _parse_raw(raw: bytes) -> dict[str, int]:
+            data = json.loads(raw)
             mapping: dict[str, int] = {}
             for obj in data.get("data", []):
                 name = obj.get("attributes", {}).get("name", "")
@@ -293,26 +393,39 @@ class PrizePicksLiveClient:
                     mapping[name] = lid
             return mapping
 
+        browser_cookies = self._get_browser_cookies()
+
+        # Strategy 1: system curl
+        raw = self._fetch_via_system_curl(url, {}, _PP_BASE_HEADERS, browser_cookies)
+        if raw:
+            try:
+                m = _parse_raw(raw)
+                logger.info("PrizePicks /leagues: %d leagues via system-curl", len(m))
+                return m
+            except Exception:
+                pass
+
+        # Strategy 2: curl_cffi
         if _HAS_CURL_CFFI:
             for browser in _CURL_CFFI_BROWSERS[:2]:
                 try:
                     resp = _cf_requests.get(url, headers=_PP_BASE_HEADERS,
                                             impersonate=browser, timeout=15)
                     if resp.status_code == 200:
-                        m = _parse_leagues(resp)
-                        logger.info("PrizePicks /leagues: discovered %d leagues (curl_cffi/%s)", len(m), browser)
+                        m = _parse_raw(resp.content)
+                        logger.info("PrizePicks /leagues: %d leagues via curl_cffi/%s", len(m), browser)
                         return m
                 except Exception as exc:
-                    logger.debug("PrizePicks /leagues curl_cffi failed (%s): %s", browser, exc)
+                    logger.debug("PrizePicks /leagues curl_cffi/%s failed: %s", browser, exc)
 
-        for headers in _PP_HEADER_VARIANTS:
+        # Strategy 3: plain requests
+        for hdrs in _PP_HEADER_VARIANTS:
             try:
-                resp = requests.get(url, headers=headers, timeout=15)
-                if resp.status_code == 403:
+                resp = requests.get(url, headers=hdrs, timeout=15)
+                if resp.status_code != 200:
                     continue
-                resp.raise_for_status()
-                m = _parse_leagues(resp)
-                logger.info("PrizePicks /leagues: discovered %d leagues", len(m))
+                m = _parse_raw(resp.content)
+                logger.info("PrizePicks /leagues: %d leagues via requests", len(m))
                 return m
             except Exception as exc:
                 logger.debug("PrizePicks /leagues fetch failed: %s", exc)

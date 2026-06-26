@@ -1,5 +1,6 @@
 requests>=2.31.0
-curl-cffi>=0.7.0   # browser TLS fingerprint impersonation — bypasses Cloudflare bot detection
+curl-cffi>=0.7.0        # browser TLS fingerprint impersonation — bypasses Cloudflare bot detection
+browser-cookie3>=0.19   # reads PrizePicks cookies from Chrome/Firefox/Safari so requests look authenticated
 nba_api>=1.4.1
 python-dotenv>=1.0.0
 numpy>=1.26.0
