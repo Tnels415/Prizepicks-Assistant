@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import date, timezone
 from pathlib import Path
+
+try:
+    # curl_cffi impersonates a real browser TLS fingerprint, which defeats most
+    # Cloudflare bot-detection blocks that plain `requests` triggers.
+    from curl_cffi import requests as _cf_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    import requests as _cf_requests   # type: ignore[no-redef]
+    _HAS_CURL_CFFI = False
 
 import requests
 
@@ -45,20 +55,32 @@ _PP_LEAGUE_NAME_PATTERNS = {
 }
 
 
+# Browser identifiers for curl_cffi impersonation (real TLS fingerprints).
+# Tried in order; first 200 response wins.
+_CURL_CFFI_BROWSERS = [
+    "chrome124", "chrome120", "chrome116", "safari17_0", "safari15_5",
+]
+
 _PP_HEADER_VARIANTS = [
-    # Variant 1: Desktop Chrome (original)
+    # Variant 1: Desktop Chrome — full set including sec-ch-ua hints
     {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
         "Sec-Fetch-Site": "same-site",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
+        "Connection": "keep-alive",
     },
     # Variant 2: Safari macOS
     {
@@ -68,6 +90,8 @@ _PP_HEADER_VARIANTS = [
             "Version/17.4.1 Safari/605.1.15"
         ),
         "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
     },
@@ -79,11 +103,18 @@ _PP_HEADER_VARIANTS = [
             "Chrome/124.0.6367.82 Mobile Safari/537.36"
         ),
         "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
         "X-Device-Id": "prizepicks-client",
     },
 ]
+
+_PP_BASE_HEADERS = {
+    "Accept": "application/json",
+    "Referer": "https://app.prizepicks.com/",
+    "Origin": "https://app.prizepicks.com",
+}
 
 
 class PrizePicksLiveClient:
@@ -126,6 +157,46 @@ class PrizePicksLiveClient:
         sport_name = sport_config["name"]
         params = {"league_id": league_id, "per_page": 250, "single_stat": "true"}
 
+        # --- Strategy 1: curl_cffi with real browser TLS fingerprints ----------
+        # curl_cffi performs a genuine TLS handshake matching the target browser,
+        # which defeats fingerprint-based Cloudflare blocks that `requests` triggers.
+        # We also prime the session with a homepage visit to collect any cookies.
+        if _HAS_CURL_CFFI:
+            for browser in _CURL_CFFI_BROWSERS:
+                try:
+                    session = _cf_requests.Session(impersonate=browser)
+                    # Warm the session: visit the app homepage to pick up cookies.
+                    session.get(
+                        "https://app.prizepicks.com/",
+                        headers=_PP_BASE_HEADERS,
+                        timeout=10,
+                    )
+                    time.sleep(1.5)  # brief human-like pause before the API call
+                    resp = session.get(
+                        PRIZEPICKS_URL,
+                        params=params,
+                        headers=_PP_BASE_HEADERS,
+                        timeout=20,
+                    )
+                    if resp.status_code == 403:
+                        logger.debug(
+                            "PrizePicks curl_cffi 403 for %s (browser=%s) — trying next",
+                            sport_name, browser,
+                        )
+                        time.sleep(2)
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    props = self._parse(data, sport_config)
+                    logger.info(
+                        "PrizePicks API: %d %s props fetched via curl_cffi/%s (league_id=%s)",
+                        len(props), sport_name, browser, league_id,
+                    )
+                    return props
+                except Exception as exc:
+                    logger.debug("PrizePicks curl_cffi error for %s (%s): %s", sport_name, browser, exc)
+
+        # --- Strategy 2: plain requests with varied headers --------------------
         for i, headers in enumerate(_PP_HEADER_VARIANTS):
             try:
                 resp = requests.get(
@@ -139,6 +210,7 @@ class PrizePicksLiveClient:
                         "PrizePicks API 403 with header variant %d for %s — trying next",
                         i + 1, sport_name,
                     )
+                    time.sleep(2)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -155,8 +227,8 @@ class PrizePicksLiveClient:
                 break
 
         logger.warning(
-            "PrizePicks API unavailable for %s (league_id=%s) — all %d header variants returned 403 or error.",
-            sport_name, league_id, len(_PP_HEADER_VARIANTS),
+            "PrizePicks API unavailable for %s (league_id=%s) — all strategies returned 403 or error.",
+            sport_name, league_id,
         )
         return []
 
@@ -185,28 +257,42 @@ class PrizePicksLiveClient:
 
     def _fetch_leagues(self) -> dict[str, int]:
         """Fetch the public PrizePicks /leagues endpoint and return name → id map."""
+        url = "https://api.prizepicks.com/leagues"
+
+        def _parse_leagues(resp) -> dict[str, int]:
+            data = resp.json()
+            mapping: dict[str, int] = {}
+            for obj in data.get("data", []):
+                name = obj.get("attributes", {}).get("name", "")
+                try:
+                    lid = int(obj.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if name:
+                    mapping[name] = lid
+            return mapping
+
+        if _HAS_CURL_CFFI:
+            for browser in _CURL_CFFI_BROWSERS[:2]:
+                try:
+                    resp = _cf_requests.get(url, headers=_PP_BASE_HEADERS,
+                                            impersonate=browser, timeout=15)
+                    if resp.status_code == 200:
+                        m = _parse_leagues(resp)
+                        logger.info("PrizePicks /leagues: discovered %d leagues (curl_cffi/%s)", len(m), browser)
+                        return m
+                except Exception as exc:
+                    logger.debug("PrizePicks /leagues curl_cffi failed (%s): %s", browser, exc)
+
         for headers in _PP_HEADER_VARIANTS:
             try:
-                resp = requests.get(
-                    "https://api.prizepicks.com/leagues",
-                    headers=headers,
-                    timeout=15,
-                )
+                resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code == 403:
                     continue
                 resp.raise_for_status()
-                data = resp.json()
-                mapping: dict[str, int] = {}
-                for obj in data.get("data", []):
-                    name = obj.get("attributes", {}).get("name", "")
-                    try:
-                        lid = int(obj.get("id"))
-                    except (TypeError, ValueError):
-                        continue
-                    if name:
-                        mapping[name] = lid
-                logger.info("PrizePicks /leagues: discovered %d leagues", len(mapping))
-                return mapping
+                m = _parse_leagues(resp)
+                logger.info("PrizePicks /leagues: discovered %d leagues", len(m))
+                return m
             except Exception as exc:
                 logger.debug("PrizePicks /leagues fetch failed: %s", exc)
         return {}
