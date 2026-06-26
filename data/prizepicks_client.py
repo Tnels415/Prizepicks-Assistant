@@ -124,113 +124,134 @@ class PrizePicksLiveClient:
     Tries multiple header strategies in case Cloudflare bot detection blocks one.
     """
 
-    def fetch_props(self, sport_config: dict) -> list[dict]:
-        sport_name = sport_config["name"]
+    # Failure reason codes returned by _fetch_with_league_id
+    _REASON_OK = "ok"
+    _REASON_BLOCKED = "blocked"       # every attempt returned HTTP 403
+    _REASON_NOT_POSTED = "not_posted" # API returned 200 but 0 usable props
+    _REASON_ERROR = "error"           # network / parse error
 
-        # Try the configured league_id first; if it returns 0 props (likely wrong
-        # ID), look up the correct ID via the leagues endpoint and retry once.
+    def fetch_props(self, sport_config: dict) -> tuple[list[dict], str]:
+        """Return (props, reason) where reason is one of the _REASON_* constants."""
+        sport_name = sport_config["name"]
         configured_id = sport_config.get("prizepicks_league_id")
         if not configured_id:
-            return []
+            return [], self._REASON_ERROR
 
-        props = self._fetch_with_league_id(configured_id, sport_config)
+        props, reason = self._fetch_with_league_id(configured_id, sport_config)
         if props:
-            return props
+            return props, self._REASON_OK
 
-        # Configured ID returned nothing useful — try dynamic lookup.
+        # If we were blocked we can't discover a new ID either — bail early.
+        if reason == self._REASON_BLOCKED:
+            return [], reason
+
+        # Got through but 0 props — league_id may have been reassigned (e.g. to UFC).
+        # Try dynamic discovery and retry once.
         discovered_id = self._lookup_league_id(sport_name)
         if discovered_id and discovered_id != configured_id:
             logger.warning(
-                "PrizePicks %s: configured league_id=%s returned no usable props "
-                "(it may have been reassigned to a different sport — e.g. UFC/MMA). "
+                "PrizePicks %s: league_id=%s returned no usable props "
+                "(may have been reassigned to a different sport). "
                 "Retrying with dynamically discovered league_id=%s. "
                 "Update 'prizepicks_league_id' in config.py to %s to make this permanent.",
                 sport_name, configured_id, discovered_id, discovered_id,
             )
-            props = self._fetch_with_league_id(discovered_id, sport_config)
+            props, reason = self._fetch_with_league_id(discovered_id, sport_config)
             if props:
-                return props
+                return props, self._REASON_OK
 
-        return []
+        return [], reason
 
-    def _fetch_with_league_id(self, league_id: int, sport_config: dict) -> list[dict]:
+    def _fetch_with_league_id(self, league_id: int, sport_config: dict) -> tuple[list[dict], str]:
+        """Try all HTTP strategies and return (props, reason)."""
         sport_name = sport_config["name"]
         params = {"league_id": league_id, "per_page": 250, "single_stat": "true"}
+        got_any_200 = False  # track whether we ever got a non-403 response
 
-        # --- Strategy 1: curl_cffi with real browser TLS fingerprints ----------
-        # curl_cffi performs a genuine TLS handshake matching the target browser,
-        # which defeats fingerprint-based Cloudflare blocks that `requests` triggers.
-        # We also prime the session with a homepage visit to collect any cookies.
+        def _handle_200(resp, label: str) -> tuple[list[dict], str]:
+            data = resp.json()
+            props = self._parse(data, sport_config)
+            if props:
+                logger.info(
+                    "PrizePicks API: %d %s props fetched via %s (league_id=%s)",
+                    len(props), sport_name, label, league_id,
+                )
+                return props, self._REASON_OK
+            # 200 but 0 usable props
+            logger.warning(
+                "PrizePicks %s (league_id=%s): API responded 200 OK via %s "
+                "but returned 0 usable props. "
+                "Lines may not have been posted yet (PrizePicks usually posts "
+                "after ~11 AM ET). Try re-running after noon, or fill props.json manually.",
+                sport_name, league_id, label,
+            )
+            return [], self._REASON_NOT_POSTED
+
+        # --- Strategy 1: curl_cffi — real browser TLS fingerprint ---------------
         if _HAS_CURL_CFFI:
             for browser in _CURL_CFFI_BROWSERS:
                 try:
                     session = _cf_requests.Session(impersonate=browser)
-                    # Warm the session: visit the app homepage to pick up cookies.
-                    session.get(
-                        "https://app.prizepicks.com/",
-                        headers=_PP_BASE_HEADERS,
-                        timeout=10,
-                    )
-                    time.sleep(1.5)  # brief human-like pause before the API call
-                    resp = session.get(
-                        PRIZEPICKS_URL,
-                        params=params,
-                        headers=_PP_BASE_HEADERS,
-                        timeout=20,
-                    )
+                    # Prime session with a homepage visit to collect cookies.
+                    try:
+                        session.get("https://app.prizepicks.com/", headers=_PP_BASE_HEADERS, timeout=10)
+                        time.sleep(1.5)
+                    except Exception:
+                        pass
+                    resp = session.get(PRIZEPICKS_URL, params=params, headers=_PP_BASE_HEADERS, timeout=20)
                     if resp.status_code == 403:
-                        logger.debug(
-                            "PrizePicks curl_cffi 403 for %s (browser=%s) — trying next",
+                        logger.warning(
+                            "PrizePicks %s: 403 via curl_cffi/%s — Cloudflare bot block. "
+                            "Trying next browser fingerprint.",
                             sport_name, browser,
                         )
                         time.sleep(2)
                         continue
                     resp.raise_for_status()
-                    data = resp.json()
-                    props = self._parse(data, sport_config)
-                    logger.info(
-                        "PrizePicks API: %d %s props fetched via curl_cffi/%s (league_id=%s)",
-                        len(props), sport_name, browser, league_id,
-                    )
-                    return props
+                    got_any_200 = True
+                    return _handle_200(resp, f"curl_cffi/{browser}")
                 except Exception as exc:
-                    logger.debug("PrizePicks curl_cffi error for %s (%s): %s", sport_name, browser, exc)
+                    logger.debug("PrizePicks curl_cffi/%s error for %s: %s", browser, sport_name, exc)
+        else:
+            logger.debug(
+                "curl_cffi not installed — skipping TLS-fingerprint strategy. "
+                "Install with: pip3 install curl-cffi"
+            )
 
-        # --- Strategy 2: plain requests with varied headers --------------------
+        # --- Strategy 2: plain requests — varied headers -----------------------
         for i, headers in enumerate(_PP_HEADER_VARIANTS):
             try:
-                resp = requests.get(
-                    PRIZEPICKS_URL,
-                    params=params,
-                    headers=headers,
-                    timeout=20,
-                )
+                resp = requests.get(PRIZEPICKS_URL, params=params, headers=headers, timeout=20)
                 if resp.status_code == 403:
-                    logger.debug(
-                        "PrizePicks API 403 with header variant %d for %s — trying next",
-                        i + 1, sport_name,
+                    logger.warning(
+                        "PrizePicks %s: 403 via requests/variant-%d — bot block. "
+                        "Trying next header set.",
+                        sport_name, i + 1,
                     )
                     time.sleep(2)
                     continue
                 resp.raise_for_status()
-                data = resp.json()
-                props = self._parse(data, sport_config)
-                logger.info(
-                    "PrizePicks API: %d %s props fetched (league_id=%s, variant %d)",
-                    len(props), sport_name, league_id, i + 1,
-                )
-                return props
+                got_any_200 = True
+                return _handle_200(resp, f"requests/variant-{i+1}")
             except requests.exceptions.HTTPError:
                 continue
             except Exception as exc:
-                logger.warning("PrizePicks API error for %s (variant %d): %s", sport_name, i + 1, exc)
+                logger.warning("PrizePicks %s requests/variant-%d error: %s", sport_name, i + 1, exc)
                 break
 
+        if got_any_200:
+            return [], self._REASON_NOT_POSTED
+
         logger.warning(
-            "PrizePicks API unavailable for %s (league_id=%s) — all strategies returned 403 or error.",
+            "PrizePicks %s (league_id=%s): all %d request strategies returned 403. "
+            "PrizePicks is blocking automated requests from this machine/IP. "
+            "Possible fixes: (1) wait and retry — blocks are sometimes temporary; "
+            "(2) install curl-cffi: pip3 install curl-cffi; "
+            "(3) fill props.json manually with today's lines.",
             sport_name, league_id,
+            len(_CURL_CFFI_BROWSERS if _HAS_CURL_CFFI else []) + len(_PP_HEADER_VARIANTS),
         )
-        return []
+        return [], self._REASON_BLOCKED
 
     def _lookup_league_id(self, sport_name: str) -> int | None:
         """Fetch /leagues and resolve sport_name → league_id by name match."""
@@ -579,23 +600,61 @@ PROPS_TEMPLATE = [
 class PropLineClient:
     """Fetches prop lines exclusively from PrizePicks, with props.json as manual fallback."""
 
+    # If the API returns 0 props (lines not posted yet), retry up to this many
+    # times with this delay between attempts before falling back to props.json.
+    _NOT_POSTED_RETRIES = 3
+    _NOT_POSTED_DELAY_SECS = 20 * 60  # 20 minutes between retries
+
     def fetch_props(self, sport_config: dict) -> list[dict]:
-        props = PrizePicksLiveClient().fetch_props(sport_config)
+        sport_name = sport_config["name"]
+        live = PrizePicksLiveClient()
+
+        props, reason = live.fetch_props(sport_config)
         if props:
             return props
 
-        return self._load_from_file(sport_config)
+        # If lines aren't posted yet, retry a few times before giving up.
+        if reason == PrizePicksLiveClient._REASON_NOT_POSTED:
+            for attempt in range(1, self._NOT_POSTED_RETRIES + 1):
+                logger.info(
+                    "PrizePicks %s: lines not posted yet — waiting %d min before retry %d/%d.",
+                    sport_name, self._NOT_POSTED_DELAY_SECS // 60,
+                    attempt, self._NOT_POSTED_RETRIES,
+                )
+                time.sleep(self._NOT_POSTED_DELAY_SECS)
+                props, reason = live.fetch_props(sport_config)
+                if props:
+                    return props
+                if reason == PrizePicksLiveClient._REASON_BLOCKED:
+                    break  # switched to a hard block — retrying won't help
+
+        return self._load_from_file(sport_config, reason)
 
     # ------------------------------------------------------------------
     # Manual fallback — read from props.json
     # ------------------------------------------------------------------
 
-    def _load_from_file(self, sport_config: dict) -> list[dict]:
+    def _load_from_file(self, sport_config: dict, reason: str = "") -> list[dict]:
         sport_name = sport_config["name"]
         prop_stat_map = sport_config["prop_stat_map"]
 
         if not PROPS_FILE.exists():
             self._write_template()
+            if reason == PrizePicksLiveClient._REASON_BLOCKED:
+                print(
+                    "\n[PrizePicks BLOCKED] The API is blocking requests from this machine.\n"
+                    "This is usually temporary. Options:\n"
+                    "  1. Wait 1–2 hours and re-run\n"
+                    "  2. Install curl-cffi for better bypass:  pip3 install curl-cffi\n"
+                    "  3. Fill props.json manually (see instructions below)\n"
+                )
+            elif reason == PrizePicksLiveClient._REASON_NOT_POSTED:
+                print(
+                    "\n[PrizePicks NOT POSTED] PrizePicks hasn't posted today's lines yet.\n"
+                    "Lines usually appear after 11 AM–1 PM ET.\n"
+                    "  1. Re-run after noon:  python3 main.py\n"
+                    "  2. Or fill props.json manually (see instructions below)\n"
+                )
             print(PROPS_FILE_INSTRUCTIONS)
             return []
 

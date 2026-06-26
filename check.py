@@ -137,34 +137,59 @@ else:
 # --- PrizePicks availability ---
 print("\n[5] Testing PrizePicks API connection...")
 try:
-    import requests
-    resp = requests.get(
-        "https://api.prizepicks.com/projections",
-        params={"league_id": 2, "per_page": 5, "single_stat": "true"},  # MLB
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                "Version/17.4.1 Safari/605.1.15"
-            ),
-            "Accept": "application/json",
-            "Referer": "https://app.prizepicks.com/",
-            "Origin": "https://app.prizepicks.com",
-        },
-        timeout=12,
-    )
-    if resp.status_code == 200:
-        count = len(resp.json().get("data", []))
-        print(f"  OK  — PrizePicks reachable, {count} MLB projections in sample")
-        if count == 0:
-            print("  NOTE — 0 MLB props returned. PrizePicks may not have posted lines yet.")
-            print("         Try again after 1 PM ET, or fill props.json manually.")
-    elif resp.status_code == 403:
-        print("  WARN — PrizePicks returned 403 (bot-block).")
-        print("         The system will retry with other header variants automatically.")
-        print("         If this persists, fill props.json as a fallback.")
-    else:
-        print(f"  WARN — PrizePicks HTTP {resp.status_code}: {resp.text[:80]}")
+    _pp_url = "https://api.prizepicks.com/projections"
+    _pp_params = {"league_id": 2, "per_page": 5, "single_stat": "true"}
+    _pp_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.4.1 Safari/605.1.15"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+    }
+
+    _pp_resp = None
+    _pp_method = ""
+
+    # Try curl_cffi first (better Cloudflare bypass via real TLS fingerprint)
+    try:
+        from curl_cffi import requests as _cf
+        _cf_session = _cf.Session(impersonate="chrome124")
+        _cf_session.get("https://app.prizepicks.com/", headers=_pp_headers, timeout=8)
+        import time as _t; _t.sleep(1)
+        _pp_resp = _cf_session.get(_pp_url, params=_pp_params, headers=_pp_headers, timeout=12)
+        _pp_method = "curl_cffi/chrome124"
+        print("  OK  — curl_cffi installed (TLS fingerprint bypass active)")
+    except ImportError:
+        print("  WARN — curl_cffi not installed. Install with:  pip3 install curl-cffi")
+        print("         Falling back to plain requests (may get 403 from Cloudflare).")
+        import requests as _req
+        _pp_resp = _req.get(_pp_url, params=_pp_params, headers=_pp_headers, timeout=12)
+        _pp_method = "requests"
+    except Exception as _cf_exc:
+        print(f"  WARN — curl_cffi attempt failed: {_cf_exc}")
+        import requests as _req
+        _pp_resp = _req.get(_pp_url, params=_pp_params, headers=_pp_headers, timeout=12)
+        _pp_method = "requests"
+
+    if _pp_resp is not None:
+        if _pp_resp.status_code == 200:
+            count = len(_pp_resp.json().get("data", []))
+            print(f"  OK  — PrizePicks reachable via {_pp_method}, {count} MLB projections in sample")
+            if count == 0:
+                print("  NOTE — 0 MLB props returned. Two likely causes:")
+                print("         (a) PrizePicks hasn't posted today's lines yet — try after 11 AM ET")
+                print("         (b) league_id=2 may have changed — the system will auto-discover the correct ID")
+        elif _pp_resp.status_code == 403:
+            print(f"  WARN — PrizePicks returned 403 via {_pp_method} (Cloudflare bot block).")
+            if "curl_cffi" not in _pp_method:
+                print("         Install curl_cffi for a better bypass:  pip3 install curl-cffi")
+            print("         Options: (1) wait 1-2 hours and retry; (2) fill props.json manually")
+            errors += 1
+        else:
+            print(f"  WARN — PrizePicks HTTP {_pp_resp.status_code}: {_pp_resp.text[:80]}")
 except Exception as exc:
     print(f"  WARN — PrizePicks unreachable: {exc}")
 
