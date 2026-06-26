@@ -54,15 +54,18 @@ def _fetch_json(url: str, params: dict, headers: dict) -> dict | None:
         try:
             return json.loads(raw)
         except Exception as exc:
-            logger.debug("JSON parse error from %s: %s", url, exc)
+            logger.warning("JSON parse error from %s: %s", url, exc)
 
     try:
         import requests as _requests
         resp = _requests.get(url, params=params, headers=headers, timeout=20)
+        if resp.status_code == 403:
+            logger.warning("HTTP 403 from %s — bot protection may be blocking the request", url)
+            return None
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
-        logger.debug("requests fetch failed for %s: %s", url, exc)
+        logger.warning("Fetch failed for %s: %s", url, exc)
     return None
 
 

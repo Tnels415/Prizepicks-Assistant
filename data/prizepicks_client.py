@@ -727,22 +727,9 @@ class PropLineClient:
         if props:
             return props
 
-        # If lines aren't posted yet, retry a few times before giving up.
-        if reason == PrizePicksLiveClient._REASON_NOT_POSTED:
-            for attempt in range(1, self._NOT_POSTED_RETRIES + 1):
-                logger.info(
-                    "PrizePicks %s: lines not posted yet — waiting %d min before retry %d/%d.",
-                    sport_name, self._NOT_POSTED_DELAY_SECS // 60,
-                    attempt, self._NOT_POSTED_RETRIES,
-                )
-                time.sleep(self._NOT_POSTED_DELAY_SECS)
-                props, reason = live.fetch_props(sport_config)
-                if props:
-                    return props
-                if reason == PrizePicksLiveClient._REASON_BLOCKED:
-                    break  # switched to a hard block — retrying won't help
-
-        # Try external sources before falling back to manual props.json
+        # PrizePicks failed or returned nothing — immediately try other sources.
+        # Do NOT block on NOT_POSTED retries first; other sportsbooks may have
+        # lines even when PrizePicks hasn't posted yet.
         from data.draftkings_client import DraftKingsPropsClient
         from data.external_props_client import UnderdogPropsClient, FanDuelPropsClient
 
@@ -761,6 +748,23 @@ class PropLineClient:
                     return ext_props
             except Exception as exc:
                 logger.warning("%s props fetch failed: %s", source_name, exc)
+
+        # All live sources failed. If PrizePicks said lines aren't posted yet,
+        # retry it a few times with a delay (gives PrizePicks time to post).
+        if reason == PrizePicksLiveClient._REASON_NOT_POSTED:
+            for attempt in range(1, self._NOT_POSTED_RETRIES + 1):
+                logger.info(
+                    "All sources returned 0 %s props — lines may not be posted yet. "
+                    "Waiting %d min before retry %d/%d.",
+                    sport_name, self._NOT_POSTED_DELAY_SECS // 60,
+                    attempt, self._NOT_POSTED_RETRIES,
+                )
+                time.sleep(self._NOT_POSTED_DELAY_SECS)
+                props, reason = live.fetch_props(sport_config)
+                if props:
+                    return props
+                if reason == PrizePicksLiveClient._REASON_BLOCKED:
+                    break
 
         return self._load_from_file(sport_config, reason)
 
