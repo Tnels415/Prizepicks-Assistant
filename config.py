@@ -57,6 +57,12 @@ def load_config() -> dict:
         "email_from": os.getenv("EMAIL_FROM"),
         "email_password": os.getenv("EMAIL_PASSWORD"),
         "email_to": os.getenv("EMAIL_TO", "tnelson8822@gmail.com"),
+        # Additional recipients (comma-separated). Always included alongside EMAIL_TO.
+        "email_cc": [
+            a.strip()
+            for a in os.getenv("EMAIL_CC", "tylerhench14@gmail.com").split(",")
+            if a.strip()
+        ],
         "smtp_host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
         "smtp_port": int(os.getenv("SMTP_PORT", "587")),
         "tv_networks": tv_networks,

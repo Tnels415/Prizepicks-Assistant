@@ -22,16 +22,18 @@ class EmailSender:
         subject: str,
         html_body: str,
         plain_text: str,
+        cc_addrs: list[str] | None = None,
     ) -> bool:
-        msg = self._build_message(to_addr, subject, html_body, plain_text)
+        all_recipients = [to_addr] + (cc_addrs or [])
+        msg = self._build_message(to_addr, subject, html_body, plain_text, cc_addrs)
         try:
             with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30) as server:
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(self.from_addr, self.password)
-                server.sendmail(self.from_addr, [to_addr], msg.as_string())
-            logger.info("Email sent to %s: %s", to_addr, subject)
+                server.sendmail(self.from_addr, all_recipients, msg.as_string())
+            logger.info("Email sent to %s: %s", ", ".join(all_recipients), subject)
             return True
         except smtplib.SMTPAuthenticationError:
             logger.error(
@@ -52,11 +54,14 @@ class EmailSender:
         subject: str,
         html_body: str,
         plain_text: str,
+        cc_addrs: list[str] | None = None,
     ) -> MIMEMultipart:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = self.from_addr
         msg["To"] = to_addr
+        if cc_addrs:
+            msg["Cc"] = ", ".join(cc_addrs)
         msg.attach(MIMEText(plain_text, "plain", "utf-8"))
         msg.attach(MIMEText(html_body, "html", "utf-8"))
         return msg

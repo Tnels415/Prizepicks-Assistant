@@ -166,7 +166,7 @@ def main() -> int:
     )
 
     def send(subject: str, html: str, plain: str) -> None:
-        sender.send_report(cfg["email_to"], subject, html, plain)
+        sender.send_report(cfg["email_to"], subject, html, plain, cc_addrs=cfg.get("email_cc"))
 
     schedule = ScheduleClient()
     odds_client = OddsAPIClient()
@@ -455,7 +455,8 @@ def main() -> int:
     _print_suggested_entries(results_by_sport)
 
     print("\n" + "=" * 60)
-    print(f"Report emailed to {cfg['email_to']}")
+    all_recipients = [cfg["email_to"]] + (cfg.get("email_cc") or [])
+    print(f"Report emailed to {', '.join(all_recipients)}")
     print(f"Total runtime: {duration:.1f}s\n")
 
     return 0
