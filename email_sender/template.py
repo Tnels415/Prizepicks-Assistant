@@ -355,7 +355,7 @@ def render_email_html(
     home/away split (+5%), rest days (+4%), pace factor (+4%).
     NBA data sourced from stats.nba.com (via nba_api).
     NHL data sourced from api-web.nhle.com. MLB data sourced from statsapi.mlb.com.
-    Prop lines sourced exclusively from PrizePicks.
+    Prop lines sourced from available sportsbooks (PrizePicks, DraftKings, Underdog Fantasy, FanDuel).
     H2H reflects current-season matchups only (zeroed if fewer than 2 games).
     </p>
     <p>Generated {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} &nbsp;|&nbsp;
@@ -395,6 +395,18 @@ def _render_row(r: PropResult) -> str:
         dq_badge = '<span class="dq-badge">minimal data</span>'
 
     tv_label = getattr(r, "broadcast_label", "") or ""
+    source = getattr(r, "prop_source", "") or ""
+    SOURCE_COLORS = {
+        "PrizePicks": ("#6c3fc5", "#f0ebff"),
+        "DraftKings": ("#1a6b3c", "#e8f5ee"),
+        "Underdog":   ("#c25c00", "#fff3e8"),
+        "FanDuel":    ("#1155cc", "#e8f0ff"),
+    }
+    fg, bg = SOURCE_COLORS.get(source, ("#555", "#f0f0f0"))
+    source_chip = (
+        f'<span style="display:inline-block;background:{bg};color:{fg};border-radius:4px;'
+        f'padding:1px 5px;font-size:9px;font-weight:bold;margin-left:4px">{source}</span>'
+    ) if source else ""
     edge_val = getattr(r, "edge", 0.0)
     tier_val = getattr(r, "tier", "speculative")
     edge_label = f"+{edge_val*100:.1f}pp" if edge_val >= 0 else f"{edge_val*100:.1f}pp"
@@ -417,7 +429,7 @@ def _render_row(r: PropResult) -> str:
   <div class="card-top">
     <div class="card-left"><span class="rank">{r.rank}</span></div>
     <div class="card-mid">
-      <div class="player">{r.player_name}{tier_star}</div>
+      <div class="player">{r.player_name}{tier_star}{source_chip}</div>
       <div class="pos-team">{r.position} &nbsp;·&nbsp; {r.team_abbr} vs {r.opponent_team_abbr}</div>
       <div class="prop-line">
         <span class="{dir_cls}">{r.direction}</span>

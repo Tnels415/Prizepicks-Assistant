@@ -590,6 +590,7 @@ class PrizePicksLiveClient:
                 "line": float(line),
                 "start_time": attrs.get("start_time", ""),
                 "pick_type": pick_type,
+                "prop_source": "PrizePicks",
             }
 
             candidates.setdefault(key, []).append(prop_dict)
@@ -740,6 +741,26 @@ class PropLineClient:
                     return props
                 if reason == PrizePicksLiveClient._REASON_BLOCKED:
                     break  # switched to a hard block — retrying won't help
+
+        # Try external sources before falling back to manual props.json
+        from data.draftkings_client import DraftKingsPropsClient
+        from data.external_props_client import UnderdogPropsClient, FanDuelPropsClient
+
+        for SourceClass, source_name in [
+            (DraftKingsPropsClient, "DraftKings"),
+            (UnderdogPropsClient, "Underdog"),
+            (FanDuelPropsClient, "FanDuel"),
+        ]:
+            try:
+                ext_props = SourceClass().fetch_props(sport_config)
+                if ext_props:
+                    logger.info(
+                        "Props loaded from %s (%d %s props)",
+                        source_name, len(ext_props), sport_name,
+                    )
+                    return ext_props
+            except Exception as exc:
+                logger.warning("%s props fetch failed: %s", source_name, exc)
 
         return self._load_from_file(sport_config, reason)
 

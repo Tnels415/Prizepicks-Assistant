@@ -66,6 +66,7 @@ class PropResult:
     # Edge + tier (Phase 3)
     edge: float = 0.0          # hit_probability/100 − PRIZEPICKS_BREAKEVEN
     tier: str = "speculative"  # "A" (high confidence) or "speculative"
+    prop_source: str = ""      # which app the line came from: PrizePicks, DraftKings, Underdog, FanDuel
 
 
 class PropAnalyzer:
@@ -597,6 +598,7 @@ class PropAnalyzer:
             hit_rate_10=hit_rates["hr_10"],
             broadcasts=context.get("broadcasts", []),
             broadcast_label=watchable_label(context.get("broadcasts", [])),
+            prop_source=prop.get("prop_source", ""),
         )
 
         results = []

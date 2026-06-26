@@ -315,6 +315,9 @@ class DraftKingsPropsClient:
                 "line": line,
                 "start_time": "",
                 "pick_type": "standard",
+                "n_variants": 1,
+                "from_multiple_lines": False,
+                "prop_source": "DraftKings",
                 "over_odds": _odds(over),
                 "under_odds": _odds(under),
             }
