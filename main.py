@@ -329,11 +329,16 @@ def main() -> int:
                 "and returned no data. Manually fill props.json with today's lines and re-run.",
                 ", ".join(props_failed_sports),
             )
+            subject = f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - NO PROPS LOADED"
             msg = (
-                "No prop lines were available today — all sportsbook sources "
-                "(PrizePicks, DraftKings, Underdog Fantasy, FanDuel) returned no data.<br><br>"
+                "<b>No prop lines could be loaded today.</b><br><br>"
+                "Every source was tried and returned no data: "
+                "PrizePicks, DraftKings, Underdog Fantasy, FanDuel, Bovada.<br><br>"
+                f"Sports with games but no props: <b>{', '.join(props_failed_sports)}</b><br><br>"
+                "This usually means the sportsbook APIs are blocking this machine, or "
+                "lines weren't posted yet at run time.<br><br>"
                 "<b>To fix:</b> manually fill <code>props.json</code> with today's "
-                "lines and re-run."
+                "lines and re-run, or check logs/daily_run.log for details."
             )
         else:
             logger.error(
@@ -345,9 +350,15 @@ def main() -> int:
                 "Disk-cached data (cache/game_logs/) will be used automatically on "
                 "subsequent runs once the cache has been warmed."
             )
-            msg = "Analysis produced no results today. Check the application logs."
+            subject = f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - NO PICKS GENERATED"
+            msg = (
+                "<b>Props loaded, but analysis produced no picks today.</b><br><br>"
+                "Every player was skipped — likely missing game-log data or a stats API "
+                "(stats.nba.com / nhle.com / statsapi.mlb.com) being blocked or rate-limited.<br><br>"
+                "Check logs/daily_run.log for per-player skip reasons."
+            )
         send(
-            f"Prop Picks - {today.strftime('%B %d, %Y')} - No Data Available",
+            subject,
             f"<p>{msg}</p>",
             msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
                 .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", "")
@@ -501,5 +512,57 @@ def _print_suggested_entries(results_by_sport: dict[str, list]) -> None:
             )
 
 
+def _send_failure_alert(exc: Exception) -> None:
+    """Best-effort email when the run crashes before any report is sent.
+
+    A scheduled run that dies silently looks identical to success (no email).
+    This sends a short alert with the error so a failed daily run is visible.
+    Any error raised while sending is swallowed — this is a last resort.
+    """
+    import traceback
+    logger = logging.getLogger("main")
+    try:
+        cfg = load_config()
+        sender = EmailSender(
+            smtp_host=cfg["smtp_host"],
+            smtp_port=cfg["smtp_port"],
+            from_addr=cfg["email_from"],
+            password=cfg["email_password"],
+        )
+        today = date.today()
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        tb_tail = tb[-1500:]  # keep the email short — last frames are the useful ones
+        html = (
+            "<p><b>The daily prop run crashed before sending a report.</b></p>"
+            f"<p>Error: <code>{type(exc).__name__}: {exc}</code></p>"
+            "<p>Most recent traceback:</p>"
+            f"<pre style='font-size:11px;background:#f4f4f4;padding:8px;overflow:auto'>{tb_tail}</pre>"
+            "<p>See logs/daily_run.log on the host machine for the full log.</p>"
+        )
+        plain = (
+            "The daily prop run crashed before sending a report.\n\n"
+            f"Error: {type(exc).__name__}: {exc}\n\n{tb_tail}\n\n"
+            "See logs/daily_run.log for the full log."
+        )
+        sender.send_report(
+            cfg["email_to"],
+            f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - RUN FAILED",
+            html,
+            plain,
+            cc_addrs=cfg.get("email_cc"),
+        )
+        logger.info("Failure-alert email sent.")
+    except Exception as alert_exc:
+        logger.error("Could not send failure-alert email: %s", alert_exc)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — top-level safety net for scheduled runs
+        logging.getLogger("main").exception("Fatal error — run aborted")
+        if isinstance(exc, Exception):
+            _send_failure_alert(exc)
+        sys.exit(1)
