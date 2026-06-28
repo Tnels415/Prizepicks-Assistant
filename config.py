@@ -51,6 +51,18 @@ def load_config() -> dict:
     tv_networks = {
         n.strip() for n in os.getenv("TV_NETWORKS", "").split(",") if n.strip()
     }
+
+    # SMTP_PORT must be a plain integer. Surface a clear, actionable message on a
+    # typo (e.g. "587X") rather than a raw ValueError traceback.
+    raw_port = os.getenv("SMTP_PORT", "587").strip()
+    try:
+        smtp_port = int(raw_port)
+    except ValueError:
+        raise ConfigError(
+            f"SMTP_PORT in your .env is not a valid number: '{raw_port}'. "
+            "It should be just digits — usually 587 (TLS) or 465 (SSL). "
+            "Remove any stray characters and re-run."
+        )
     return {
         "balldontlie_api_key": os.getenv("BALLDONTLIE_API_KEY"),
         "odds_api_key": os.getenv("THE_ODDS_API_KEY"),
@@ -64,7 +76,7 @@ def load_config() -> dict:
             if a.strip()
         ],
         "smtp_host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        "smtp_port": int(os.getenv("SMTP_PORT", "587")),
+        "smtp_port": smtp_port,
         "tv_networks": tv_networks,
     }
 
