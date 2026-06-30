@@ -38,8 +38,10 @@ fi
 echo "Using interpreter: $PY" >> "$LOG"
 
 # Run the analyzer. Both stdout and stderr go to the log.
-"$PY" main.py >> "$LOG" 2>&1
-STATUS=$?
+# Use `|| STATUS=$?` so a non-zero exit from main.py does NOT abort this
+# wrapper under `set -e` — we still want to record the exit code below.
+STATUS=0
+"$PY" main.py >> "$LOG" 2>&1 || STATUS=$?
 
 echo "===== Run finished with exit code $STATUS at $(date '+%H:%M:%S %Z') =====" >> "$LOG"
 exit $STATUS
