@@ -393,7 +393,15 @@ class PropAnalyzer:
         #
         # For manual props.json entries with no goblin/demon flag, n_variants is set to 3
         # to indicate the user explicitly marked it as a standard line.
-        under_ok = (not is_goblin and not is_demon) and n_variants >= 3
+        #
+        # The n_variants gate only applies to PrizePicks, where a lone line may
+        # secretly be a goblin/demon. Props from two-way sportsbooks (DraftKings,
+        # Underdog, FanDuel, Bovada) are standard lines by construction — UNDER
+        # is always a real, offered side there. Without this exception the model
+        # was OVER-only on all sportsbook-sourced props.
+        prop_source = prop.get("prop_source", "")
+        is_two_way_book = prop_source not in ("", "PrizePicks")
+        under_ok = (not is_goblin and not is_demon) and (n_variants >= 3 or is_two_way_book)
 
         delta_consistency = self._scorer.score_consistency(
             consistency["std_dev"], avgs["season_avg"], line
@@ -555,6 +563,9 @@ class PropAnalyzer:
             # so the calibrator's factor-weight loop ignores it.
             "_dist_over": round(dist_base, 2) if dist_base is not None else None,
             "_market_over": round(market_over, 2) if market_over is not None else None,
+            # Best-Bets gate inputs (underscore-prefixed = ignored by factor loop)
+            "_injury": injury_severity,
+            "_std_line": bool(under_ok),
         }
 
         key_factors = self._build_key_factors(raw_adj, avgs, h2h, line, opponent_abbr, opp_rank)
@@ -678,7 +689,10 @@ class PropAnalyzer:
 
     @staticmethod
     def _compute_predicted_value(last_5: float, last_10: float, season: float) -> float:
-        return round(0.5 * last_5 + 0.35 * last_10 + 0.15 * season, 1)
+        # Balanced recency vs true talent. A heavier L5 weight (formerly 0.5)
+        # chases hot streaks that sportsbooks have already shaded lines for —
+        # the model's top OVERs were regression candidates, not edges.
+        return round(0.35 * last_5 + 0.35 * last_10 + 0.30 * season, 1)
 
     @staticmethod
     def _assess_quality(games_analyzed: int) -> str:
@@ -777,3 +791,58 @@ def rank_and_tier(results: list[PropResult]) -> list[PropResult]:
         key=lambda r: r.hit_probability, reverse=True,
     )
     return a_tier + speculative
+
+
+def is_best_bet(r: PropResult) -> bool:
+    """Strict gate for the Best Bets slate (the 60%-accuracy standard).
+
+    Every condition must hold — the point is to only surface picks where the
+    model and the market agree on clean data. Zero qualifiers on a day is a
+    valid outcome.
+    """
+    from config import BEST_BET_MARKET_AGREE_PROB, BEST_BET_MIN_GAMES
+
+    if r.tier != "A":
+        return False
+    if r.data_quality != "full" or r.games_analyzed < BEST_BET_MIN_GAMES:
+        return False
+    # Standard two-way line only — goblin/demon lines are shaded by design.
+    if not r.raw_adjustments.get("_std_line"):
+        return False
+    # No availability questions.
+    if r.raw_adjustments.get("_injury") in ("questionable", "doubtful", "out"):
+        return False
+    # The devigged market must exist AND agree with the pick's side.
+    market_over = r.raw_adjustments.get("_market_over")
+    if market_over is None:
+        return False
+    market_side_prob = market_over if r.direction == "OVER" else 100.0 - market_over
+    if market_side_prob < BEST_BET_MARKET_AGREE_PROB:
+        return False
+    return True
+
+
+def select_best_bets(results_by_sport: dict[str, list[PropResult]]) -> list[PropResult]:
+    """Pick the day's Best Bets across all sports: every pick passing the
+    strict gate, ranked by edge, capped at BEST_BETS_MAX_PER_DAY. At most one
+    direction per (player, stat) — the higher-edge side wins."""
+    from config import BEST_BETS_MAX_PER_DAY
+
+    candidates = [
+        r
+        for sport_results in results_by_sport.values()
+        for r in sport_results
+        if is_best_bet(r)
+    ]
+    candidates.sort(key=lambda r: r.edge, reverse=True)
+    picked: list[PropResult] = []
+    seen_props: set[tuple] = set()
+    for r in candidates:
+        key = (r.player_name, r.stat_type)
+        if key in seen_props:
+            continue
+        seen_props.add(key)
+        picked.append(r)
+        if len(picked) >= BEST_BETS_MAX_PER_DAY:
+            break
+    return picked

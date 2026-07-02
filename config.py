@@ -512,7 +512,9 @@ SPORT_CONFIG: dict[str, dict] = {
 # This is a BASE weight; analysis.market.dynamic_weight scales it per prop by the
 # number of books backing the consensus (3+ books → ~0.55, 1 book → ~0.30), so
 # the model is anchored hardest where the market signal is sharpest.
-MARKET_BLEND_WEIGHT = 0.50          # base weight given to devigged sportsbook prob (0=model only)
+MARKET_BLEND_WEIGHT = 0.60          # base weight given to devigged sportsbook prob (0=model only)
+                                    # 0.60: measured hit rates showed model-vs-market disagreements
+                                    # were net losing, so lean harder on devigged consensus.
 MARKET_ODDS_MAX_REQUESTS_PER_RUN = 30  # hard cap to protect the free-tier quota
 
 # Injury tiering — confidence shrink applied to players who carry a designation
@@ -537,6 +539,15 @@ PRIZEPICKS_BREAKEVEN = 0.54         # per-leg flex break-even (5-/6-leg flex)
 A_TIER_MIN_PROB = 60.0              # minimum hit_probability (%) to qualify for A-tier
 A_TIER_MIN_EDGE = 0.06              # minimum edge above break-even to qualify
 MIN_GAMES_FOR_A_TIER = 8            # minimum games_analyzed for A-tier eligibility
+
+# "Best Bets" — the strict slate held to the 60%-accuracy standard.
+# A pick must clear EVERY gate: A-tier, market agreement, full data,
+# standard line, no injury question. Zero qualifying picks on a day is a
+# valid (and honest) outcome. Their accuracy is tracked separately in the
+# history DB (pick_group='best_bet') — that number is the 60% KPI.
+BEST_BETS_MAX_PER_DAY = 4           # cap across all sports, ranked by edge
+BEST_BET_MARKET_AGREE_PROB = 55.0   # devigged market P(pick side) must be ≥ this
+BEST_BET_MIN_GAMES = 15             # data_quality "full" — stricter than A-tier's 8
 
 # PrizePicks Power Play payout multipliers by entry size (all legs must hit).
 # Public standard payouts; verify in-app as PrizePicks adjusts promos.

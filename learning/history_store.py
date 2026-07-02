@@ -76,6 +76,11 @@ _MIGRATIONS = [
     "ALTER TABLE predictions ADD COLUMN closing_line REAL",
     "ALTER TABLE predictions ADD COLUMN closing_prob_over REAL",
     "ALTER TABLE predictions ADD COLUMN clv REAL",
+    # Which subset a prediction belongs to: 'analyzed' (everything scored),
+    # 'emailed' (in the top-10 report), 'best_bet' (strict 60%-standard slate).
+    # Accuracy must be reported per group — averaging the full analyzed set
+    # badly misstates the accuracy of the picks the user actually sees.
+    "ALTER TABLE predictions ADD COLUMN pick_group TEXT NOT NULL DEFAULT 'analyzed'",
 ]
 
 
@@ -110,6 +115,16 @@ class HistoryStore:
             for sql in _MIGRATIONS:
                 try:
                     conn.execute(sql)
+                    # One-time backfill when pick_group is freshly added:
+                    # historical rows can't distinguish emailed vs analyzed, but
+                    # the emailed picks were the top-10 of the ranked list, so
+                    # rank<=10 is a close approximation. Runs only in the same
+                    # pass that created the column (re-runs hit OperationalError
+                    # above and never reach here).
+                    if "pick_group" in sql:
+                        conn.execute(
+                            "UPDATE predictions SET pick_group='emailed' WHERE rank <= 10"
+                        )
                 except sqlite3.OperationalError:
                     pass  # column already exists
 
@@ -154,6 +169,32 @@ class HistoryStore:
                 inserted += cur.rowcount
         logger.debug("Saved %d/%d predictions (%s) for %s", inserted, len(rows), sport, date_str)
         return inserted
+
+    def mark_pick_group(
+        self,
+        run_date: date,
+        results: list,
+        group: str,
+    ) -> int:
+        """Tag saved predictions as 'emailed' or 'best_bet'.
+
+        Matches rows by the predictions table's unique key
+        (date, player_name, stat_type, direction). A 'best_bet' tag wins over
+        'emailed' (never downgrade a best_bet back to emailed).
+        """
+        date_str = run_date.isoformat()
+        updated = 0
+        with self._conn() as conn:
+            for r in results:
+                cur = conn.execute(
+                    """UPDATE predictions SET pick_group=?
+                       WHERE date=? AND player_name=? AND stat_type=? AND direction=?
+                         AND pick_group != 'best_bet'""",
+                    (group, date_str, r.player_name, r.stat_type, r.direction),
+                )
+                updated += cur.rowcount
+        logger.debug("Marked %d predictions as %s for %s", updated, group, date_str)
+        return updated
 
     def update_player_id(self, player_name: str, player_id: int) -> None:
         with self._conn() as conn:
@@ -419,28 +460,80 @@ class HistoryStore:
     # Email section data
     # ------------------------------------------------------------------
 
-    def get_results_for_date(self, for_date: date, sport: str | None = None) -> list[dict]:
+    @staticmethod
+    def _group_clause(pick_group: str | None) -> tuple[str, tuple]:
+        """SQL fragment for a pick_group filter.
+
+        'emailed' includes 'best_bet' (best bets are a subset of the email);
+        'best_bet' is exact; None means no filter (whole analyzed universe).
+        """
+        if pick_group is None:
+            return "", ()
+        if pick_group == "emailed":
+            return " AND pick_group IN ('emailed','best_bet')", ()
+        return " AND pick_group = ?", (pick_group,)
+
+    def get_results_for_date(
+        self,
+        for_date: date,
+        sport: str | None = None,
+        pick_group: str | None = None,
+    ) -> list[dict]:
+        g_sql, g_args = self._group_clause(pick_group)
         with self._conn() as conn:
             if sport:
                 rows = conn.execute(
-                    "SELECT * FROM predictions WHERE date=? AND sport=? ORDER BY rank ASC",
-                    (for_date.isoformat(), sport),
+                    f"SELECT * FROM predictions WHERE date=? AND sport=?{g_sql} ORDER BY rank ASC",
+                    (for_date.isoformat(), sport, *g_args),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM predictions WHERE date=? ORDER BY rank ASC",
-                    (for_date.isoformat(),),
+                    f"SELECT * FROM predictions WHERE date=?{g_sql} ORDER BY rank ASC",
+                    (for_date.isoformat(), *g_args),
                 ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_cumulative_accuracy(self, sport: str | None = None) -> dict:
+    def get_evaluated_since(
+        self,
+        days: int = 30,
+        sport: str | None = None,
+        pick_group: str | None = None,
+    ) -> list[dict]:
+        """Evaluated predictions from the last *days* days, for diagnostics."""
+        from datetime import timedelta
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        g_sql, g_args = self._group_clause(pick_group)
+        query = f"SELECT * FROM predictions WHERE correct IN (0,1) AND date >= ?{g_sql}"
+        args: tuple = (cutoff, *g_args)
+        if sport:
+            query += " AND sport=?"
+            args = (*args, sport)
+        with self._conn() as conn:
+            rows = conn.execute(query, args).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("raw_adjustments"):
+                try:
+                    d["raw_adjustments"] = json.loads(d["raw_adjustments"])
+                except Exception:
+                    d["raw_adjustments"] = {}
+            result.append(d)
+        return result
+
+    def get_cumulative_accuracy(
+        self,
+        sport: str | None = None,
+        pick_group: str | None = None,
+    ) -> dict:
+        g_sql, g_args = self._group_clause(pick_group)
         with self._conn() as conn:
             if sport:
-                where = "WHERE correct IN (0,1) AND sport=?"
-                args = (sport,)
+                where = f"WHERE correct IN (0,1) AND sport=?{g_sql}"
+                args = (sport, *g_args)
             else:
-                where = "WHERE correct IN (0,1)"
-                args = ()
+                where = f"WHERE correct IN (0,1){g_sql}"
+                args = g_args
 
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS n, SUM(correct) AS s FROM predictions {where}", args

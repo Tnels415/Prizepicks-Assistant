@@ -114,7 +114,15 @@ class Calibrator:
     # ------------------------------------------------------------------
 
     def _compute_calibration(self, rows: list[dict], today: date) -> dict[int, float]:
-        # Weighted accumulation per bucket
+        # Weighted accumulation per bucket.
+        #
+        # Direction consistency: the resulting delta is applied to over_prob in
+        # PropAnalyzer (prop_analyzer.py, calibration_map lookup), so the map
+        # must be built from OVER-direction rows only. Mixing UNDER rows (whose
+        # hit_probability is 100-over) into the same buckets muddies the signal
+        # with a quantity the correction is never applied to.
+        rows = [r for r in rows if r.get("direction") == "OVER"]
+
         buckets_w_correct: dict[int, float] = {}
         buckets_w_total: dict[int, float] = {}
 

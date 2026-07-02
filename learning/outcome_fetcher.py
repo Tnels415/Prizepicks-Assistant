@@ -128,23 +128,36 @@ class OutcomeFetcher:
         actuals: dict | None,
         outcome_stat_map: dict,
     ) -> tuple[float, int]:
+        # Grading contract: a pick is only graded when we have a real actual
+        # value. Missing data of any kind (DNP, unknown played status, missing
+        # stat column, unmapped stat type) is EXCLUDED (correct=-1), never
+        # coerced to 0 — a phantom 0 grades every OVER as a loss and every
+        # UNDER as a win, which systematically corrupts the accuracy record.
         if actuals is None:
             return 0.0, -1
 
-        if not actuals.get("played", True):
+        played = actuals.get("played")
+        if not played:  # False, or key absent → unknown: don't grade
             return -1.0, -1
 
         stat_type = prediction["stat_type"]
         cols = outcome_stat_map.get(stat_type)
 
         if cols is None:
-            # Try prop_stat_map fallback: use stat_type key directly
-            col_guess = stat_type[:3].upper()
-            actual_value = actuals.get(col_guess, 0.0)
-        elif isinstance(cols, list):
-            actual_value = sum(actuals.get(c, 0.0) for c in cols)
+            logger.warning(
+                "No outcome mapping for stat_type '%s' — excluding from grading. "
+                "Add it to outcome_stat_map in config.py to grade this stat.",
+                stat_type,
+            )
+            return -1.0, -1
+        if isinstance(cols, list):
+            if any(c not in actuals for c in cols):
+                return -1.0, -1
+            actual_value = sum(actuals[c] for c in cols)
         else:
-            actual_value = actuals.get(cols, 0.0)
+            if cols not in actuals:
+                return -1.0, -1
+            actual_value = actuals[cols]
 
         line = prediction["line"]
         direction = prediction["direction"]

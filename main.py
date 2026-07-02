@@ -28,7 +28,7 @@ from data.nba_stats_client import NBAStatsClient
 from data.nhl_stats_client import NHLStatsClient
 from data.mlb_stats_client import MLBStatsClient
 from data.nfl_stats_client import NFLStatsClient
-from analysis.prop_analyzer import PropAnalyzer, PropResult, rank_and_tier
+from analysis.prop_analyzer import PropAnalyzer, PropResult, rank_and_tier, select_best_bets
 from analysis import correlation as _correlation
 from analysis.watchability import is_watchable
 from learning.history_store import HistoryStore
@@ -150,10 +150,17 @@ def main() -> int:
             if corr.brier_score is not None:
                 brier_scores[sport] = corr.brier_score
 
-        # Yesterday's results for the email — all sports combined
-        yesterday_results = store.get_results_for_date(yesterday)
-        cumulative_stats = store.get_cumulative_accuracy()
+        # Yesterday's results for the email — EMAILED picks only. Grading the
+        # whole analyzed universe (dozens of low-confidence rows never shown to
+        # the user) badly misstated accuracy; the recap must reflect the picks
+        # the user actually received.
+        yesterday_results = store.get_results_for_date(yesterday, pick_group="emailed")
+        cumulative_stats = store.get_cumulative_accuracy(pick_group="emailed")
         cumulative_stats["brier_scores"] = brier_scores
+        # Best-Bets accuracy — the 60% KPI, tracked separately.
+        cumulative_stats["best_bets"] = store.get_cumulative_accuracy(pick_group="best_bet")
+
+        _log_diagnostics(store)
     except Exception as exc:
         logger.warning("Learning layer failed (%s) — running with raw model", exc)
         store = None
@@ -173,6 +180,7 @@ def main() -> int:
 
     # --- Per-sport analysis ------------------------------------------------
     results_by_sport: dict[str, list[PropResult]] = {}
+    full_results_by_sport: dict[str, list[PropResult]] = {}  # pre-trim, for Best Bets
     tv_results_by_sport: dict[str, list[PropResult]] = {}
     broadcast_coverage: dict[str, bool] = {}   # sport → True if any props had broadcast data
     any_games = False
@@ -288,8 +296,18 @@ def main() -> int:
             if watchable:
                 tv_results_by_sport[sport_name] = _top_picks(watchable)
 
+            full_results_by_sport[sport_name] = sport_results
             sport_results = _top_picks(sport_results)
             results_by_sport[sport_name] = sport_results
+
+            # Tag the emailed picks in history so accuracy can be reported for
+            # what the user actually sees, not the whole analyzed universe.
+            if store is not None:
+                try:
+                    store.mark_pick_group(today, sport_results, "emailed")
+                except Exception as exc:
+                    logger.warning("Failed to mark emailed picks: %s", exc)
+
             top = sport_results[0]
             logger.info(
                 "%s: top pick — %s %s %s %.0f%%",
@@ -383,6 +401,21 @@ def main() -> int:
     # Build correlation-aware power-play suggestions for the email.
     _suggested_entries = _build_suggested_entries(results_by_sport)
 
+    # --- Best Bets: the strict slate held to the 60% standard ---------------
+    # Selected from the FULL analyzed set (a qualifying pick may sit outside a
+    # sport's top-10). Tagged in history so their accuracy is tracked as the KPI.
+    best_bets = select_best_bets(full_results_by_sport)
+    if best_bets and store is not None:
+        try:
+            store.mark_pick_group(today, best_bets, "best_bet")
+        except Exception as exc:
+            logger.warning("Failed to mark best bets: %s", exc)
+    logger.info(
+        "Best Bets today: %d qualifying pick(s)%s",
+        len(best_bets),
+        "" if best_bets else " — no pick cleared every gate (a valid outcome)",
+    )
+
     yest_html = render_yesterday_section(yesterday_results, cumulative_stats, yesterday)
     html_body = render_email_html(
         results_by_sport, today, duration,
@@ -390,6 +423,8 @@ def main() -> int:
         tv_results_by_sport=tv_results_by_sport,
         broadcast_coverage=broadcast_coverage,
         suggested_entries=_suggested_entries,
+        best_bets=best_bets,
+        best_bet_stats=cumulative_stats.get("best_bets") if cumulative_stats else None,
     )
     plain_body = render_plain_text(
         results_by_sport, today,
@@ -399,6 +434,8 @@ def main() -> int:
         tv_results_by_sport=tv_results_by_sport,
         broadcast_coverage=broadcast_coverage,
         suggested_entries=_suggested_entries,
+        best_bets=best_bets,
+        best_bet_stats=cumulative_stats.get("best_bets") if cumulative_stats else None,
     )
 
     send(subject, html_body, plain_body)
@@ -472,6 +509,61 @@ def main() -> int:
     print(f"Total runtime: {duration:.1f}s\n")
 
     return 0
+
+
+def _log_diagnostics(store: HistoryStore) -> None:
+    """Log a 30-day model-health block: Brier + calibration + tier hit rates.
+
+    Pure observability — wrapped by the caller's try/except so a diagnostics
+    failure can never break the run.
+    """
+    from analysis import backtest as _bt
+    from config import PRIZEPICKS_BREAKEVEN
+
+    logger = logging.getLogger("main")
+    rows_all = store.get_evaluated_since(days=30)
+    if len(rows_all) < 10:
+        logger.info("Diagnostics: <10 evaluated picks in last 30 days — skipping block")
+        return
+    rows_emailed = store.get_evaluated_since(days=30, pick_group="emailed")
+    rows_best = store.get_evaluated_since(days=30, pick_group="best_bet")
+
+    def _hit(rows: list) -> str:
+        if not rows:
+            return "n/a"
+        n_hit = sum(r["correct"] for r in rows)
+        return f"{n_hit}/{len(rows)} ({n_hit / len(rows) * 100:.0f}%)"
+
+    logger.info("---- Model health (last 30 days) ----")
+    logger.info(
+        "Hit rate: analyzed-all %s | emailed %s | BEST BETS %s (goal 60%%)",
+        _hit(rows_all), _hit(rows_emailed), _hit(rows_best),
+    )
+    try:
+        logger.info("Brier (all): %.4f | Brier (emailed): %.4f",
+                    _bt.brier_score(rows_all),
+                    _bt.brier_score(rows_emailed) if rows_emailed else float("nan"))
+    except Exception:
+        pass
+    try:
+        for bucket in _bt.calibration_table(rows_all):
+            logger.info(
+                "Calibration %s: predicted %.0f%% → actual %.0f%% (n=%d)",
+                bucket.get("bucket", "?"), bucket.get("predicted", 0),
+                bucket.get("actual", 0), bucket.get("n", 0),
+            )
+    except Exception:
+        pass
+    try:
+        vs_be = _bt.hit_rate_vs_breakeven(rows_emailed or rows_all, PRIZEPICKS_BREAKEVEN * 100)
+        logger.info("Vs breakeven (%.0f%%): %s", PRIZEPICKS_BREAKEVEN * 100, vs_be)
+    except Exception:
+        pass
+    try:
+        logger.info("Market agreement: %s", _bt.market_agreement(rows_all))
+    except Exception:
+        pass
+    logger.info("-------------------------------------")
 
 
 def _build_suggested_entries(results_by_sport: dict[str, list]) -> list:

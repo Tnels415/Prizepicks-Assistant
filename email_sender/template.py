@@ -102,6 +102,7 @@ def render_yesterday_section(
     <div style="padding:12px 14px 6px">
       <div style="font-weight:bold;font-size:14px;color:#333;margin-bottom:4px">
         Yesterday's Results &mdash; {yesterday_date.strftime('%B %d, %Y')}
+        <span style="font-weight:normal;font-size:11px;color:#888">(emailed picks only)</span>
       </div>
       <div style="font-size:13px">
         <span style="font-size:22px;font-weight:bold;color:{score_color}">{n_correct}/{n_total}</span>
@@ -206,6 +207,47 @@ def render_suggested_entries_section(entries: list) -> str:
   <div style="margin-bottom:12px"></div>"""
 
 
+def render_best_bets_section(best_bets: list, best_bet_stats: dict | None = None) -> str:
+    """Render the strict Best Bets slate — the picks held to the 60% standard."""
+    stats_line = ""
+    if best_bet_stats and best_bet_stats.get("total_evaluated", 0) > 0:
+        bb_total = best_bet_stats["total_evaluated"]
+        bb_correct = best_bet_stats["total_correct"]
+        bb_pct = best_bet_stats["accuracy_pct"]
+        color = "#28a745" if bb_pct >= 60 else "#e67e22" if bb_pct >= 50 else "#dc3545"
+        stats_line = (
+            f'<div style="padding:6px 14px;background:#fff8e6;font-size:12px;color:#555">'
+            f'Best Bets track record: <b style="color:{color}">{bb_correct}/{bb_total} '
+            f'({bb_pct}%)</b> &nbsp;·&nbsp; goal: 60%</div>'
+        )
+
+    if not best_bets:
+        return f"""
+  <div style="padding:10px 14px;background:#8a6d00;color:#fff;font-size:14px;font-weight:bold">
+    &#127942; Best Bets &mdash; held to the 60% standard
+  </div>
+  {stats_line}
+  <div style="padding:10px 14px;background:#fffdf4;font-size:12px;color:#777">
+    No pick cleared every gate today (model+market agreement, full data, clean
+    injury report, standard line). No forced picks &mdash; an empty slate is an
+    honest one.
+  </div>
+  <div style="margin-bottom:12px"></div>"""
+
+    cards = "\n".join(_render_row(r) for r in best_bets)
+    return f"""
+  <div style="padding:10px 14px;background:#8a6d00;color:#fff;font-size:14px;font-weight:bold">
+    &#127942; Best Bets &mdash; held to the 60% standard
+  </div>
+  {stats_line}
+  <div style="padding:6px 14px;background:#fffdf4;font-size:11px;color:#777">
+    Every gate cleared: A-tier edge, sportsbook market agreement, 15+ games of data,
+    standard line, no injury questions. Max {len(best_bets)} shown, ranked by edge.
+  </div>
+  {cards}
+  <div style="margin-bottom:12px"></div>"""
+
+
 def render_email_html(
     results_by_sport: dict[str, list[PropResult]],
     run_date: date,
@@ -214,6 +256,8 @@ def render_email_html(
     tv_results_by_sport: dict | None = None,
     broadcast_coverage: dict | None = None,
     suggested_entries: list | None = None,
+    best_bets: list | None = None,
+    best_bet_stats: dict | None = None,
 ) -> str:
     """
     results_by_sport: {"NBA": [...], "NHL": [...], ...} mapping sport name to sorted PropResult list.
@@ -269,14 +313,20 @@ def render_email_html(
 
     all_header_html = """
   <div style="padding:10px 14px;background:#1a2a5e;color:#fff;font-size:14px;font-weight:bold">
-    &#128202; All Picks (Highest Probability)
+    &#128202; Full List &mdash; Speculative
+  </div>
+  <div style="padding:6px 14px;background:#eef2ff;font-size:11px;color:#555">
+    Informational picks, ranked by model probability. Not held to the 60% standard
+    &mdash; that's the Best Bets section above.
   </div>"""
 
     suggested_section_html = render_suggested_entries_section(suggested_entries or [])
+    best_bets_html = render_best_bets_section(best_bets or [], best_bet_stats)
 
     # Build per-sport table sections (full, unfiltered)
     sport_sections_html = (
-        tv_section_html
+        best_bets_html
+        + tv_section_html
         + all_header_html
         + _render_sport_sections(results_by_sport)
         + suggested_section_html
@@ -493,12 +543,28 @@ def render_plain_text(
     tv_results_by_sport: dict | None = None,
     broadcast_coverage: dict | None = None,
     suggested_entries: list | None = None,
+    best_bets: list | None = None,
+    best_bet_stats: dict | None = None,
 ) -> str:
     lines = [
         f"Multi-Sport Prop Picks — {run_date.strftime('%B %d, %Y')}",
         "=" * 70,
         "",
     ]
+
+    # Best Bets — the strict 60%-standard slate, first thing in the report.
+    lines.append("==== 🏆 BEST BETS (held to the 60% standard) ====")
+    if best_bet_stats and best_bet_stats.get("total_evaluated", 0) > 0:
+        lines.append(
+            f"  Track record: {best_bet_stats['total_correct']}/"
+            f"{best_bet_stats['total_evaluated']} ({best_bet_stats['accuracy_pct']}%) — goal 60%"
+        )
+    if best_bets:
+        for r in best_bets:
+            _plain_row(r, lines)
+    else:
+        lines.append("  No pick cleared every gate today (an empty slate is an honest one).")
+    lines.append("")
 
     # Yesterday's results section
     if yesterday_results:
@@ -566,7 +632,7 @@ def render_plain_text(
                 "",
             ]
 
-    lines.append("==== 📊 ALL PICKS (HIGHEST PROBABILITY) ====")
+    lines.append("==== 📊 FULL LIST — SPECULATIVE (not held to the 60% standard) ====")
     lines += _plain_sport_blocks(results_by_sport)
 
     if suggested_entries:
