@@ -1,93 +1,114 @@
 #!/usr/bin/env bash
 #
 # diagnose_schedule.sh — report why the daily scheduled run did or didn't fire.
-# Read-only: it inspects the scheduler state and recent logs, changes nothing.
+# Read-only: inspects scheduler state, interpreter resolution, and recent logs.
 #
 # Usage:  ./diagnose_schedule.sh
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.prizepicks.assistant.daily"
 OS="$(uname -s)"
+MARKER="$REPO_DIR/logs/last_success.date"
 
 echo "============================================================"
 echo " Daily-schedule diagnostic"
 echo " Repo:  $REPO_DIR"
 echo " OS:    $OS"
-echo " Now:   $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo " Now:   $(date '+%Y-%m-%d %H:%M:%S %Z')  (Pacific: $(TZ=America/Los_Angeles date '+%H:%M'))"
 echo "============================================================"
 
-# --- 1. Is the runner present and executable? -----------------------------
+# --- 1. Runner present? -----------------------------------------------------
 echo
 echo "[1] Runner script"
 if [ -x "$REPO_DIR/run_daily.sh" ]; then
     echo "  OK   run_daily.sh exists and is executable"
 else
-    echo "  FAIL run_daily.sh missing or not executable"
-    echo "       Fix: chmod +x run_daily.sh"
+    echo "  FAIL run_daily.sh missing or not executable  (fix: chmod +x run_daily.sh)"
 fi
 
-# --- 2. Is the schedule installed? ----------------------------------------
+# --- 2. Which python would a SCHEDULED run use? ------------------------------
+# Simulate the minimal PATH launchd/cron provide, plus the extension
+# run_daily.sh adds, and probe the same candidate list it uses.
 echo
-echo "[2] Schedule installation"
+echo "[2] Interpreter resolution under scheduler PATH"
+FOUND=""
+for candidate in \
+    "$REPO_DIR/.venv/bin/python3" "$REPO_DIR/venv/bin/python3" "$REPO_DIR/env/bin/python3" \
+    "/opt/homebrew/bin/python3" "/usr/local/bin/python3" "/usr/bin/python3"; do
+    [ -x "$candidate" ] || continue
+    if "$candidate" -c "import requests" >/dev/null 2>&1; then
+        echo "  OK   would use: $candidate  (has project dependencies)"
+        FOUND="$candidate"
+        break
+    else
+        echo "  --   $candidate exists but LACKS dependencies (import requests failed)"
+    fi
+done
+if [ -z "$FOUND" ]; then
+    echo "  FAIL No python3 with the project dependencies found."
+    echo "       Fix: pip3 install -r requirements.txt  (using your Terminal's python3)"
+fi
+
+# --- 3. Schedule installed & loaded? -----------------------------------------
+echo
+echo "[3] Schedule installation"
 if [ "$OS" = "Darwin" ]; then
     PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
     if [ -f "$PLIST" ]; then
         echo "  OK   LaunchAgent plist exists: $PLIST"
-        echo "       Scheduled time (local clock):"
-        # Print the Hour/Minute the plist will fire at.
-        /usr/libexec/PlistBuddy -c "Print :StartCalendarInterval" "$PLIST" 2>/dev/null \
-            | sed 's/^/         /'
-        echo "       launchctl status:"
-        if launchctl list | grep -q "$LABEL"; then
-            launchctl list | grep "$LABEL" | sed 's/^/         /'
-            echo "         (columns: PID  LastExitCode  Label)"
-            echo "         PID '-' = not running right now (normal between runs)."
-            echo "         LastExitCode 0 = last run succeeded; non-zero = it ran but failed."
+        if grep -q "StartInterval" "$PLIST"; then
+            echo "       Type: interval firing (every 30 min + in-script 9 AM PT guard) — current design"
         else
-            echo "         NOT LOADED — the plist file exists but launchd isn't tracking it."
-            echo "         Fix:  launchctl load \"$PLIST\""
+            echo "       Type: OLD single-fire design — re-run ./setup_schedule.sh to upgrade"
+        fi
+        if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+            echo "       launchctl status: LOADED"
+            launchctl list | grep "$LABEL" | sed 's/^/         /'
+            echo "         (columns: PID  LastExitCode  Label — exit 0 = last invocation OK)"
+        else
+            echo "  FAIL  Plist exists but NOT loaded into launchd."
+            echo "        Fix: ./setup_schedule.sh   (reinstalls and loads it)"
         fi
     else
-        echo "  FAIL No LaunchAgent installed."
-        echo "       The schedule was never set up on this machine."
-        echo "       Fix:  ./setup_schedule.sh"
+        echo "  FAIL No LaunchAgent installed. Fix: ./setup_schedule.sh"
     fi
 elif [ "$OS" = "Linux" ]; then
     if crontab -l 2>/dev/null | grep -q "$LABEL"; then
         echo "  OK   cron entry installed:"
         crontab -l 2>/dev/null | grep "$LABEL" | sed 's/^/         /'
     else
-        echo "  FAIL No cron entry found."
-        echo "       Fix:  ./setup_schedule.sh"
+        echo "  FAIL No cron entry found. Fix: ./setup_schedule.sh"
     fi
 fi
 
-# --- 3. Did it actually run recently? -------------------------------------
+# --- 4. Success marker / run history -----------------------------------------
 echo
-echo "[3] Recent run history (logs/daily_run.log)"
+echo "[4] Run history"
+if [ -f "$MARKER" ]; then
+    echo "  Last successful run (Pacific date): $(cat "$MARKER")"
+    if [ "$(cat "$MARKER")" = "$(TZ=America/Los_Angeles date '+%Y-%m-%d')" ]; then
+        echo "  OK   Already ran successfully today."
+    else
+        echo "  NOTE Has not succeeded yet today (will run in the next 30-min slot after 9 AM PT)."
+    fi
+else
+    echo "  No success marker yet — the guarded runner has never completed successfully."
+fi
 RUNLOG="$REPO_DIR/logs/daily_run.log"
 if [ -f "$RUNLOG" ]; then
-    LAST_START="$(grep "Scheduled run:" "$RUNLOG" | tail -1)"
-    LAST_FINISH="$(grep "Run finished" "$RUNLOG" | tail -1)"
-    if [ -n "$LAST_START" ]; then
-        echo "  Last start:  ${LAST_START#*=====}"
-        echo "  Last finish: ${LAST_FINISH#*=====}"
-    else
-        echo "  No 'Scheduled run' entries yet — the wrapper has never executed."
-        echo "  (If the schedule is installed, the Mac may have been OFF at run time."
-        echo "   launchd catches up after SLEEP, but not after a full power-off.)"
-    fi
+    echo "  Last log entries:"
+    grep -E "Scheduled run:|Run finished|ERROR" "$RUNLOG" | tail -4 | sed 's/^/         /'
 else
     echo "  No daily_run.log yet — the wrapper has never executed on this machine."
 fi
 
-# --- 4. launchd's own stderr (macOS) --------------------------------------
+# --- 5. launchd stderr (macOS) ------------------------------------------------
 if [ "$OS" = "Darwin" ]; then
     echo
-    echo "[4] launchd stderr (logs/launchd.err.log — last 10 lines)"
+    echo "[5] launchd stderr (logs/launchd.err.log — last 5 lines)"
     ERRLOG="$REPO_DIR/logs/launchd.err.log"
     if [ -s "$ERRLOG" ]; then
-        tail -10 "$ERRLOG" | sed 's/^/         /'
+        tail -5 "$ERRLOG" | sed 's/^/         /'
     else
         echo "         (empty or absent — no launchd-level errors recorded)"
     fi
@@ -95,9 +116,5 @@ fi
 
 echo
 echo "============================================================"
-echo " Most common causes when [2] is OK but [3] shows no runs:"
-echo "   • The Mac was powered OFF (not just asleep) at run time."
-echo "   • You are not logged into the macOS user account at run time"
-echo "     (LaunchAgents only run while the user is logged in)."
-echo " To test the runner right now:   ./run_daily.sh  then re-check [3]."
+echo " To force a run right now:   ./run_daily.sh --now"
 echo "============================================================"
