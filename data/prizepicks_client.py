@@ -724,26 +724,70 @@ PROPS_TEMPLATE = [
 class PropLineClient:
     """Fetches prop lines exclusively from PrizePicks, with props.json as manual fallback."""
 
-    # If the API returns 0 props (lines not posted yet), retry up to this many
-    # times with this delay between attempts before falling back to props.json.
-    _NOT_POSTED_RETRIES = 3
-    _NOT_POSTED_DELAY_SECS = 20 * 60  # 20 minutes between retries
+    # Short in-process retries for a transient blip (a source briefly down, a
+    # request timing out). This is intentionally SHORT — the external
+    # scheduler (run_daily.sh) already re-invokes the whole process every 30
+    # minutes and does not mark a props-empty day as "done" (see main.py's
+    # props_failed_sports branch), so the real "wait for lines to post"
+    # retry cadence lives at that outer layer, not inside one invocation.
+    _RETRY_ATTEMPTS = 2
+    _RETRY_DELAY_SECS = 3 * 60  # 3 minutes between in-process retries
 
     def fetch_props(self, sport_config: dict) -> list[dict]:
+        sport_name = sport_config["name"]
+
+        props, reason = self._fetch_merged(sport_config)
+        if props:
+            return props
+
+        # Empty on the first pass — could be a transient blip (a source
+        # timing out) rather than "no lines exist yet." A short retry here
+        # smooths that over without blocking the process for long; if it's
+        # genuinely too early for lines to be posted, the outer 30-minute
+        # scheduler cadence is what actually waits it out across the day.
+        #
+        # IMPORTANT: this retries the FULL multi-source fetch, not just
+        # PrizePicks — PrizePicks is chronically bot-blocked now, so gating
+        # retries on ITS specific reason code made this dead code in
+        # practice once every other source also came up empty.
+        for attempt in range(1, self._RETRY_ATTEMPTS + 1):
+            logger.info(
+                "All sources returned 0 %s props on attempt %d — waiting %d min "
+                "before a quick retry (%d/%d). If this keeps happening across "
+                "scheduled runs, lines likely aren't posted yet for today's "
+                "games; the scheduler will keep trying every 30 min.",
+                sport_name, attempt, self._RETRY_DELAY_SECS // 60,
+                attempt, self._RETRY_ATTEMPTS,
+            )
+            time.sleep(self._RETRY_DELAY_SECS)
+            props, reason = self._fetch_merged(sport_config)
+            if props:
+                return props
+
+        logger.warning(
+            "%s: 0 props from every source (PrizePicks, Bovada, DraftKings, "
+            "Underdog, FanDuel) after %d attempt(s). Check logs/props_%s.log "
+            "for per-source HTTP status/error detail (DEBUG level) to tell "
+            "apart 'blocked/network error' from 'lines not posted yet'.",
+            sport_name, self._RETRY_ATTEMPTS + 1, date.today().isoformat(),
+        )
+        return self._load_from_file(sport_config, reason)
+
+    def _fetch_merged(self, sport_config: dict) -> tuple[list[dict], str]:
+        """Try PrizePicks, then merge every other reachable book by
+        (player, stat) — coverage is the union, not first-source-wins.
+
+        Returns (props, reason). reason is only meaningful when props is
+        empty; it reflects PrizePicks's own failure mode for the manual
+        props.json fallback message, since PrizePicks was tried first.
+        """
         sport_name = sport_config["name"]
         live = PrizePicksLiveClient()
 
         props, reason = live.fetch_props(sport_config)
         if props:
-            return props
+            return props, PrizePicksLiveClient._REASON_OK
 
-        # PrizePicks failed or returned nothing — immediately try other sources.
-        # Do NOT block on NOT_POSTED retries first; other sportsbooks may have
-        # lines even when PrizePicks hasn't posted yet.
-        #
-        # Gather from EVERY reachable book and merge by (player, stat) rather
-        # than returning the first source that yields anything — coverage is the
-        # union, so one book being down or thin doesn't shrink the slate.
         from data.draftkings_client import DraftKingsPropsClient
         from data.external_props_client import (
             BovadaPropsClient,
@@ -772,6 +816,10 @@ class PropLineClient:
                     added += 1
             if added:
                 per_source_counts[source_name] = added
+            logger.debug(
+                "%s %s: %d prop(s) returned this attempt", source_name, sport_name,
+                len(ext_props or []),
+            )
 
         if merged:
             logger.info(
@@ -779,26 +827,9 @@ class PropLineClient:
                 len(merged), sport_name, len(per_source_counts),
                 ", ".join(f"{s}={n}" for s, n in per_source_counts.items()),
             )
-            return list(merged.values())
+            return list(merged.values()), PrizePicksLiveClient._REASON_OK
 
-        # All live sources failed. If PrizePicks said lines aren't posted yet,
-        # retry it a few times with a delay (gives PrizePicks time to post).
-        if reason == PrizePicksLiveClient._REASON_NOT_POSTED:
-            for attempt in range(1, self._NOT_POSTED_RETRIES + 1):
-                logger.info(
-                    "All sources returned 0 %s props — lines may not be posted yet. "
-                    "Waiting %d min before retry %d/%d.",
-                    sport_name, self._NOT_POSTED_DELAY_SECS // 60,
-                    attempt, self._NOT_POSTED_RETRIES,
-                )
-                time.sleep(self._NOT_POSTED_DELAY_SECS)
-                props, reason = live.fetch_props(sport_config)
-                if props:
-                    return props
-                if reason == PrizePicksLiveClient._REASON_BLOCKED:
-                    break
-
-        return self._load_from_file(sport_config, reason)
+        return [], reason
 
     # ------------------------------------------------------------------
     # Manual fallback — read from props.json

@@ -77,6 +77,36 @@ echo "" >> "$LOG"
 echo "===== Scheduled run: $(date '+%Y-%m-%d %H:%M:%S %Z') =====" >> "$LOG"
 echo "Using interpreter: $PY" >> "$LOG"
 
+# --- Environment diagnostics -------------------------------------------------
+# launchd/cron give this script a stripped-down environment compared to an
+# interactive Terminal — no shell rc files are sourced, so anything the user
+# relies on there (a proxy, a VPN-only DNS resolver, custom env vars) is
+# silently absent here even though the PATH/python fix above is in place.
+# Log what's actually present so a "scheduled run gets 0 props but a manual
+# Terminal run gets props" report can be diagnosed from this file alone,
+# instead of guessing.
+{
+    echo "-- environment --"
+    echo "PATH=$PATH"
+    echo "HOME=$HOME"
+    for var in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy; do
+        val="${!var:-}"
+        [ -n "$val" ] && echo "$var is SET (masked)" || true
+    done
+    echo "-- quick reachability probe (5s timeout each) --"
+    for url in \
+        "https://api.prizepicks.com/leagues" \
+        "https://www.bovada.lv" \
+        "https://sportsbook.draftkings.com" \
+        "https://api.underdogfantasy.com" \
+        "https://sbapi.fanduel.com"; do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null)"
+        [ -z "$code" ] && code="FAIL"
+        echo "  $url -> HTTP $code"
+    done
+    echo "-- end diagnostics --"
+} >> "$LOG" 2>&1
+
 # Run the analyzer; capture the exit code without aborting the wrapper.
 STATUS=0
 "$PY" main.py >> "$LOG" 2>&1 || STATUS=$?

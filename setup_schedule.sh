@@ -30,6 +30,35 @@ OS="$(uname -s)"
 REMOVE=0
 [ "${1:-}" = "--remove" ] && REMOVE=1
 
+# --- Carry over any proxy env vars from THIS shell into the schedule -------
+# launchd/cron give the scheduled run a bare environment — none of the
+# current shell's exported vars carry over automatically. If this machine
+# needs a proxy/VPN-set env var to reach the internet (or specifically the
+# sportsbook APIs), baking it into the schedule here is the difference
+# between "works when I run it by hand" and "the scheduled run gets nothing."
+# No-ops harmlessly if none of these are set.
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+PROXY_VARS="HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy"
+PROXY_ENV_XML=""
+PROXY_ENV_EXPORTS=""
+PROXY_VAR_NAMES=""
+for var in $PROXY_VARS; do
+    val="${!var:-}"
+    if [ -n "$val" ]; then
+        PROXY_ENV_XML="${PROXY_ENV_XML}        <key>$(xml_escape "$var")</key>
+        <string>$(xml_escape "$val")</string>
+"
+        PROXY_ENV_EXPORTS="${PROXY_ENV_EXPORTS}${var}=${val} "
+        PROXY_VAR_NAMES="${PROXY_VAR_NAMES}${var} "
+    fi
+done
+if [ -n "$PROXY_VAR_NAMES" ]; then
+    echo "Carrying proxy env var(s) into the schedule: $PROXY_VAR_NAMES"
+fi
+
 case "$OS" in
 # =====================================================================
 Darwin)
@@ -66,6 +95,9 @@ Darwin)
     <string>$REPO_DIR/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>
     <string>$REPO_DIR/logs/launchd.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+$PROXY_ENV_XML    </dict>
 </dict>
 </plist>
 PLISTEOF
@@ -96,7 +128,7 @@ PLISTEOF
 # =====================================================================
 Linux)
     CRON_TAG="# $LABEL"
-    CRON_LINE="*/30 * * * * /bin/bash $RUNNER $CRON_TAG"
+    CRON_LINE="*/30 * * * * ${PROXY_ENV_EXPORTS}/bin/bash $RUNNER $CRON_TAG"
     EXISTING="$(crontab -l 2>/dev/null | grep -v "$CRON_TAG" || true)"
     if [ "$REMOVE" = "1" ]; then
         printf '%s\n' "$EXISTING" | crontab -

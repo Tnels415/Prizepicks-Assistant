@@ -17,7 +17,7 @@ import copy
 import logging
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -337,29 +337,27 @@ def main() -> int:
         return 0 if sent_ok else 1
 
     if not results_by_sport:
-        if props_failed_sports and not any(
+        props_data_issue = props_failed_sports and not any(
             s for s in active_sports
             if s not in props_failed_sports
             and schedule.get_todays_games(sport_key=SPORT_CONFIG[s]["odds_sport_key"])
-        ):
-            # Every sport with games today had props loading fail — it's a data source issue
+        )
+        if props_data_issue:
+            # Every sport with games today had props loading fail — it's a data source issue.
+            # The scheduler (run_daily.sh) re-invokes this whole process every 30 minutes and
+            # only stops for the day once main() returns 0, so returning 1 here already makes
+            # it retry automatically all day as lines may simply not be posted yet at 9 AM.
+            # Without de-duping, that means an identical alert email every 30 minutes — so we
+            # send the "no props yet" notice only once per day, then retry silently, and send
+            # one final "gave up for today" notice past a cutoff hour so retries don't run all
+            # night once every book's lines are confirmed to still be missing.
             logger.error(
                 "No prop lines could be loaded for any sport (%s). "
                 "All prop sources were tried (PrizePicks, DraftKings, Underdog, FanDuel, Bovada) "
                 "and returned no data. Manually fill props.json with today's lines and re-run.",
                 ", ".join(props_failed_sports),
             )
-            subject = f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - NO PROPS LOADED"
-            msg = (
-                "<b>No prop lines could be loaded today.</b><br><br>"
-                "Every source was tried and returned no data: "
-                "PrizePicks, DraftKings, Underdog Fantasy, FanDuel, Bovada.<br><br>"
-                f"Sports with games but no props: <b>{', '.join(props_failed_sports)}</b><br><br>"
-                "This usually means the sportsbook APIs are blocking this machine, or "
-                "lines weren't posted yet at run time.<br><br>"
-                "<b>To fix:</b> manually fill <code>props.json</code> with today's "
-                "lines and re-run, or check logs/daily_run.log for details."
-            )
+            return _handle_no_props_today(send, today, props_failed_sports)
         else:
             logger.error(
                 "Analysis produced no results for any sport. "
@@ -377,16 +375,16 @@ def main() -> int:
                 "(stats.nba.com / nhle.com / statsapi.mlb.com) being blocked or rate-limited.<br><br>"
                 "Check logs/daily_run.log for per-player skip reasons."
             )
-        sent_ok = send(
-            subject,
-            f"<p>{msg}</p>",
-            msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
-                .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", "")
-                .replace("<a href='https://the-odds-api.com'>the-odds-api.com</a>", "the-odds-api.com"),
-        )
-        if not sent_ok:
-            logger.error("Failed to send '%s' notification email.", subject)
-        return 1
+            sent_ok = send(
+                subject,
+                f"<p>{msg}</p>",
+                msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
+                    .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", "")
+                    .replace("<a href='https://the-odds-api.com'>the-odds-api.com</a>", "the-odds-api.com"),
+            )
+            if not sent_ok:
+                logger.error("Failed to send '%s' notification email.", subject)
+            return 1
 
     duration = time.time() - start
     total_results = sum(len(r) for r in results_by_sport.values())
@@ -627,6 +625,106 @@ def _print_suggested_entries(results_by_sport: dict[str, list]) -> None:
                 f"      {lg.player_name:<22} {direction} {lg.stat_type:<14} "
                 f"{lg.line:<6.1f} ({lg.hit_probability:.0f}%)"
             )
+
+
+# Past this Pacific hour, stop retrying for the day even if props are still
+# empty — otherwise the 30-min scheduler would hammer every sportsbook API
+# all night once it's clear lines simply aren't coming today.
+_NO_PROPS_GIVE_UP_HOUR_PT = 20  # 8 PM Pacific
+
+_NO_PROPS_ALERT_MARKER = Path("logs/no_props_alerted.date")
+_NO_PROPS_GAVE_UP_MARKER = Path("logs/no_props_gave_up.date")
+
+
+def _pacific_hour_and_date_str() -> tuple[int, str]:
+    from zoneinfo import ZoneInfo
+    now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    return now_pt.hour, now_pt.date().isoformat()
+
+
+def _marker_is_today(marker: Path, today_str: str) -> bool:
+    try:
+        return marker.exists() and marker.read_text().strip() == today_str
+    except Exception:
+        return False
+
+
+def _handle_no_props_today(send, today: date, props_failed_sports: list[str]) -> int:
+    """Decide whether to alert, retry silently, or give up for the day.
+
+    The scheduler re-invokes main() every 30 minutes and only stops for the
+    day once this returns 0 (see run_daily.sh's success-marker gate), so this
+    function's return value directly controls whether today's automatic
+    retries continue. Sending the identical "no props" email on every one of
+    those retries would spam the user every 30 minutes, so:
+      - the FIRST time today, send one alert and keep retrying (return 1)
+      - after that, retry silently with no email (return 1)
+      - once _NO_PROPS_GIVE_UP_HOUR_PT PT has passed, send one final
+        "gave up for today" email and stop retrying (return 0)
+    """
+    logger = logging.getLogger("main")
+    hour_pt, today_str = _pacific_hour_and_date_str()
+    Path("logs").mkdir(exist_ok=True)
+
+    already_alerted = _marker_is_today(_NO_PROPS_ALERT_MARKER, today_str)
+    already_gave_up = _marker_is_today(_NO_PROPS_GAVE_UP_MARKER, today_str)
+
+    if already_gave_up:
+        logger.info("Already gave up on props for today — staying quiet until tomorrow.")
+        return 0
+
+    if hour_pt >= _NO_PROPS_GIVE_UP_HOUR_PT:
+        subject = f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - NO PROPS ALL DAY"
+        msg = (
+            "<b>No prop lines were ever loaded today.</b><br><br>"
+            "Every source was retried throughout the day (PrizePicks, DraftKings, "
+            "Underdog Fantasy, FanDuel, Bovada) and none posted lines for: "
+            f"<b>{', '.join(props_failed_sports)}</b>.<br><br>"
+            "Giving up for today — the system will try again tomorrow morning.<br><br>"
+            "Check logs/props_" + today.isoformat() + ".log for per-source detail "
+            "if this repeats tomorrow."
+        )
+        sent_ok = send(subject, f"<p>{msg}</p>", msg.replace("<br><br>", "\n\n").replace("<br>", "\n")
+                        .replace("<b>", "").replace("</b>", ""))
+        if not sent_ok:
+            logger.error("Failed to send the end-of-day 'gave up' notification email.")
+        _NO_PROPS_GAVE_UP_MARKER.write_text(today_str)
+        return 0
+
+    if already_alerted:
+        logger.info(
+            "Already sent the 'no props' alert today — retrying silently "
+            "(next scheduled attempt in ~30 min, until %d:00 PT).",
+            _NO_PROPS_GIVE_UP_HOUR_PT,
+        )
+        return 1
+
+    subject = f"⚠️ Prop Picks - {today.strftime('%B %d, %Y')} - NO PROPS LOADED (yet)"
+    msg = (
+        "<b>No prop lines could be loaded yet today.</b><br><br>"
+        "Every source was tried and returned no data: "
+        "PrizePicks, DraftKings, Underdog Fantasy, FanDuel, Bovada.<br><br>"
+        f"Sports with games but no props: <b>{', '.join(props_failed_sports)}</b><br><br>"
+        "This usually means lines simply haven't been posted yet — the system will "
+        f"keep retrying automatically every 30 minutes until {_NO_PROPS_GIVE_UP_HOUR_PT}:00 PT "
+        "(you will NOT get another email unless it either succeeds or is still empty by "
+        "then). If this happens every day, check logs/props_" + today.isoformat() +
+        ".log for per-source detail — it may mean a sportsbook is blocking this machine "
+        "rather than lines being late.<br><br>"
+        "<b>To fix manually right now:</b> fill <code>props.json</code> with today's "
+        "lines and re-run."
+    )
+    sent_ok = send(
+        subject,
+        f"<p>{msg}</p>",
+        msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
+            .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", ""),
+    )
+    if sent_ok:
+        _NO_PROPS_ALERT_MARKER.write_text(today_str)
+    else:
+        logger.error("Failed to send the 'no props' notification email.")
+    return 1
 
 
 def _send_failure_alert(exc: Exception) -> None:

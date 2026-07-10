@@ -114,6 +114,43 @@ if [ "$OS" = "Darwin" ]; then
     fi
 fi
 
+# --- 6. "runs happen but pull no props" diagnostics --------------------------
+# A scheduler that fires correctly but a props pipeline that comes up empty
+# looks identical to "nothing happened" from the outside. Check the two most
+# likely causes directly: an env var (proxy/VPN) present in your interactive
+# shell but invisible to the scheduler, and whether each sportsbook is even
+# reachable from here right now.
+echo
+echo "[6] Props pipeline: env + live reachability"
+echo "  Proxy env vars visible in THIS shell (won't reach the scheduler unless"
+echo "  ./setup_schedule.sh was re-run after they were set):"
+found_proxy=0
+for var in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy; do
+    val="${!var:-}"
+    if [ -n "$val" ]; then
+        echo "    $var is SET"
+        found_proxy=1
+    fi
+done
+[ "$found_proxy" = "0" ] && echo "    (none set)"
+echo "  Live reachability probe (5s timeout each):"
+for url in \
+    "https://api.prizepicks.com/leagues" \
+    "https://www.bovada.lv" \
+    "https://sportsbook.draftkings.com" \
+    "https://api.underdogfantasy.com" \
+    "https://sbapi.fanduel.com"; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null)"
+    [ -z "$code" ] && code="FAIL"
+    echo "    $url -> HTTP $code"
+done
+echo "  Compare this to the '-- quick reachability probe --' block logged inside"
+echo "  logs/daily_run.log by the actual scheduled run — if THIS shell reaches a"
+echo "  site but the scheduled run's log shows it failing, that's an environment"
+echo "  difference (proxy/VPN/DNS) between your Terminal and the scheduler."
+echo "  Also check logs/props_$(date '+%Y-%m-%d').log (DEBUG level) for exact"
+echo "  per-source HTTP status codes from the actual analyzer run."
+
 echo
 echo "============================================================"
 echo " To force a run right now:   ./run_daily.sh --now"
