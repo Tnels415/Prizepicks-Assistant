@@ -57,7 +57,7 @@ if [ "$OS" = "Darwin" ]; then
     if [ -f "$PLIST" ]; then
         echo "  OK   LaunchAgent plist exists: $PLIST"
         if grep -q "StartInterval" "$PLIST"; then
-            echo "       Type: interval firing (every 30 min + in-script 9 AM PT guard) — current design"
+            echo "       Type: interval firing (every 30 min + in-script 9:15 AM PT guard) — current design"
         else
             echo "       Type: OLD single-fire design — re-run ./setup_schedule.sh to upgrade"
         fi
@@ -89,7 +89,7 @@ if [ -f "$MARKER" ]; then
     if [ "$(cat "$MARKER")" = "$(TZ=America/Los_Angeles date '+%Y-%m-%d')" ]; then
         echo "  OK   Already ran successfully today."
     else
-        echo "  NOTE Has not succeeded yet today (will run in the next 30-min slot after 9 AM PT)."
+        echo "  NOTE Has not succeeded yet today (will run in the next 30-min slot after 9:15 AM PT)."
     fi
 else
     echo "  No success marker yet — the guarded runner has never completed successfully."

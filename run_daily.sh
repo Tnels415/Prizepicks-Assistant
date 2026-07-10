@@ -2,16 +2,16 @@
 #
 # run_daily.sh — wrapper that runs the prop analyzer once.
 # Invoked by the scheduler (launchd on macOS / cron on Linux) every 30 minutes;
-# a guard makes it a no-op except the first eligible slot at/after 9 AM Pacific.
+# a guard makes it a no-op except the first eligible slot at/after 9:15 AM Pacific.
 #
 # Usage:
-#   ./run_daily.sh          # guarded: runs only if >= 9 AM PT and not yet run today
+#   ./run_daily.sh          # guarded: runs only if >= 9:15 AM PT and not yet run today
 #   ./run_daily.sh --now    # bypass the guard (manual testing)
 #
-# Why the guard design: a single fire-at-9:00 schedule silently skips the day
+# Why the guard design: a single fire-at-9:15 schedule silently skips the day
 # if the machine is off/asleep/logged-out at that exact minute. Firing every
 # 30 min and letting this guard decide guarantees the run happens in the first
-# awake window at/after 9 AM PT.
+# awake window at/after 9:15 AM PT.
 
 set -uo pipefail
 
@@ -61,11 +61,21 @@ if [ -z "$PY" ]; then
     exit 1
 fi
 
-# --- Guard: run only at/after 9 AM Pacific, once per day -------------------
+# --- Guard: run only at/after 9:15 AM Pacific, once per day ----------------
+TARGET_HOUR_PT=9
+TARGET_MINUTE_PT=15
 if [ "$FORCE" != "1" ]; then
     TODAY_PT="$(TZ=America/Los_Angeles date '+%Y-%m-%d')"
+    # %H/%M are zero-padded (e.g. "09") for portability across BSD (macOS) and
+    # GNU date — neither reliably supports the no-padding "%-H" GNU extension.
+    # Force base-10 with the 10# prefix so bash arithmetic doesn't misparse a
+    # leading zero as an octal digit (e.g. "09" is invalid octal and would
+    # otherwise raise "value too great for base").
     HOUR_PT="$(TZ=America/Los_Angeles date '+%H')"
-    if [ "$HOUR_PT" -lt 9 ]; then
+    MIN_PT="$(TZ=America/Los_Angeles date '+%M')"
+    NOW_MINUTES=$(( 10#$HOUR_PT * 60 + 10#$MIN_PT ))
+    TARGET_MINUTES=$(( TARGET_HOUR_PT * 60 + TARGET_MINUTE_PT ))
+    if [ "$NOW_MINUTES" -lt "$TARGET_MINUTES" ]; then
         exit 0   # before the window — silent no-op
     fi
     if [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$TODAY_PT" ]; then

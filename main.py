@@ -346,7 +346,7 @@ def main() -> int:
             # Every sport with games today had props loading fail — it's a data source issue.
             # The scheduler (run_daily.sh) re-invokes this whole process every 30 minutes and
             # only stops for the day once main() returns 0, so returning 1 here already makes
-            # it retry automatically all day as lines may simply not be posted yet at 9 AM.
+            # it retry automatically all day as lines may simply not be posted yet at 9:15 AM.
             # Without de-duping, that means an identical alert email every 30 minutes — so we
             # send the "no props yet" notice only once per day, then retry silently, and send
             # one final "gave up for today" notice past a cutoff hour so retries don't run all

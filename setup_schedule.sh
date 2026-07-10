@@ -4,8 +4,8 @@
 #
 # Design: the scheduler fires run_daily.sh every 30 minutes; run_daily.sh's
 # internal guard makes every invocation a silent no-op EXCEPT the first one
-# at/after 9:00 AM Pacific that hasn't succeeded yet today. This is far more
-# reliable than a single fire-at-9:00 schedule, which silently skips the day
+# at/after 9:15 AM Pacific that hasn't succeeded yet today. This is far more
+# reliable than a single fire-at-9:15 schedule, which silently skips the day
 # if the machine is off, asleep, or logged out at that exact minute.
 #
 #   macOS  → launchd LaunchAgent with StartInterval=1800
@@ -117,9 +117,9 @@ PLISTEOF
     fi
 
     echo "Installed launchd schedule (via $LOADED_VIA)."
-    echo "  Fires every 30 min; actually runs in the first awake window at/after 9:00 AM Pacific."
-    echo "  If the Mac is asleep at 9:00, it catches up as soon as it's awake — no day is skipped"
-    echo "  as long as the Mac is on and you are logged in at some point after 9 AM PT."
+    echo "  Fires every 30 min; actually runs in the first awake window at/after 9:15 AM Pacific."
+    echo "  If the Mac is asleep at 9:15, it catches up as soon as it's awake — no day is skipped"
+    echo "  as long as the Mac is on and you are logged in at some point after 9:15 AM PT."
     echo "  Plist: $PLIST"
     echo "  Logs:  $REPO_DIR/logs/daily_run.log"
     echo ""
@@ -137,7 +137,7 @@ Linux)
     fi
     printf '%s\n%s\n' "$EXISTING" "$CRON_LINE" | sed '/^$/d' | crontab -
     echo "Installed cron schedule."
-    echo "  Fires every 30 min; actually runs in the first window at/after 9:00 AM Pacific."
+    echo "  Fires every 30 min; actually runs in the first window at/after 9:15 AM Pacific."
     echo "  Logs: $REPO_DIR/logs/daily_run.log"
     echo ""
     echo "Test it now with:  ./run_daily.sh --now"
