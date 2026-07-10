@@ -172,8 +172,8 @@ def main() -> int:
         password=cfg["email_password"],
     )
 
-    def send(subject: str, html: str, plain: str) -> None:
-        sender.send_report(cfg["email_to"], subject, html, plain, cc_addrs=cfg.get("email_cc"))
+    def send(subject: str, html: str, plain: str) -> bool:
+        return sender.send_report(cfg["email_to"], subject, html, plain, cc_addrs=cfg.get("email_cc"))
 
     schedule = ScheduleClient()
     odds_client = OddsAPIClient()
@@ -327,12 +327,14 @@ def main() -> int:
     if not any_games:
         msg = f"No games scheduled today ({today.strftime('%B %d, %Y')}) for any active sport."
         logger.info(msg)
-        send(
+        sent_ok = send(
             f"Prop Picks - {today.strftime('%B %d, %Y')} - No Games Today",
             f"<p>{msg}</p>",
             msg,
         )
-        return 0
+        if not sent_ok:
+            logger.error("Failed to send 'No Games Today' notification email.")
+        return 0 if sent_ok else 1
 
     if not results_by_sport:
         if props_failed_sports and not any(
@@ -375,13 +377,15 @@ def main() -> int:
                 "(stats.nba.com / nhle.com / statsapi.mlb.com) being blocked or rate-limited.<br><br>"
                 "Check logs/daily_run.log for per-player skip reasons."
             )
-        send(
+        sent_ok = send(
             subject,
             f"<p>{msg}</p>",
             msg.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
                 .replace("<br><br>", "\n\n").replace("<code>", "").replace("</code>", "")
                 .replace("<a href='https://the-odds-api.com'>the-odds-api.com</a>", "the-odds-api.com"),
         )
+        if not sent_ok:
+            logger.error("Failed to send '%s' notification email.", subject)
         return 1
 
     duration = time.time() - start
@@ -438,7 +442,25 @@ def main() -> int:
         best_bet_stats=cumulative_stats.get("best_bets") if cumulative_stats else None,
     )
 
-    send(subject, html_body, plain_body)
+    report_sent_ok = send(subject, html_body, plain_body)
+    if not report_sent_ok:
+        logger.error(
+            "Failed to send the daily report email. The analysis completed "
+            "successfully but no email was delivered — see the SMTP error "
+            "above. A fallback HTML copy was saved to output/."
+        )
+        try:
+            _send_failure_alert(RuntimeError(
+                "Report email failed to send (SMTP error) — see logs/daily_run.log "
+                "for the exact error. The analysis itself completed successfully; "
+                "only email delivery failed. If this alert arrived, SMTP is "
+                "intermittently working — check for a transient network issue. "
+                "If it did NOT arrive, your EMAIL_PASSWORD (Gmail App Password) "
+                "is likely invalid — generate a new one at "
+                "https://myaccount.google.com/apppasswords and update .env."
+            ))
+        except Exception as alert_exc:
+            logger.error("Could not send email-failure alert either: %s", alert_exc)
 
     # --- Yesterday's results to stdout --------------------------------------
     yest_evaluated = [r for r in yesterday_results if r.get("correct") in (0, 1)]
@@ -505,10 +527,13 @@ def main() -> int:
 
     print("\n" + "=" * 60)
     all_recipients = [cfg["email_to"]] + (cfg.get("email_cc") or [])
-    print(f"Report emailed to {', '.join(all_recipients)}")
+    if report_sent_ok:
+        print(f"Report emailed to {', '.join(all_recipients)}")
+    else:
+        print(f"WARNING: report email FAILED to send to {', '.join(all_recipients)} — see log above.")
     print(f"Total runtime: {duration:.1f}s\n")
 
-    return 0
+    return 0 if report_sent_ok else 1
 
 
 def _log_diagnostics(store: HistoryStore) -> None:
