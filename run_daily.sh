@@ -118,8 +118,16 @@ echo "Using interpreter: $PY" >> "$LOG"
 } >> "$LOG" 2>&1
 
 # Run the analyzer; capture the exit code without aborting the wrapper.
+# main.py has its own same-day success guard (checks this script's MARKER
+# file too, so a manual `python3 main.py` can't double-send against a
+# scheduled run or vice versa) — pass --force through so --now still means
+# "send again right now" instead of silently no-op'ing on an already-sent day.
 STATUS=0
-"$PY" main.py >> "$LOG" 2>&1 || STATUS=$?
+if [ "$FORCE" = "1" ]; then
+    "$PY" main.py --force >> "$LOG" 2>&1 || STATUS=$?
+else
+    "$PY" main.py >> "$LOG" 2>&1 || STATUS=$?
+fi
 
 if [ "$STATUS" -eq 0 ]; then
     TZ=America/Los_Angeles date '+%Y-%m-%d' > "$MARKER"

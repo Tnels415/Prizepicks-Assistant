@@ -7,7 +7,8 @@ Fetches today's NBA, NHL, and MLB (and NFL in season) player prop lines,
 analyzes each using historical stats, and emails a ranked HTML report.
 
 Usage:
-    python main.py
+    python main.py            # skips silently if today's report already sent
+    python main.py --force    # sends again even if today's report already went out
 
 Cron (daily 10 AM Eastern):
     0 10 * * * /usr/bin/python3 /path/to/main.py >> /var/log/props.log 2>&1
@@ -119,6 +120,18 @@ def main() -> int:
     logger.info("=" * 60)
     logger.info("Multi-Sport Prop Analyzer starting — %s", today.isoformat())
     logger.info("Active sports this month: %s", ", ".join(active_sports))
+
+    # --- Skip if today's report already went out (e.g. the scheduled run) ---
+    # Prevents a manual `python3 main.py` from sending a duplicate on top of
+    # what run_daily.sh already sent automatically today, or vice versa.
+    if "--force" not in sys.argv[1:]:
+        _, today_str_pt = _pacific_hour_and_date_str()
+        if _marker_is_today(_SUCCESS_MARKER, today_str_pt):
+            logger.info(
+                "Today's report already went out (see logs/last_success.date) — "
+                "skipping to avoid a duplicate. Run with --force to send again anyway."
+            )
+            return 0
 
     # --- Configuration (needed early for stats clients) --------------------
     try:
@@ -334,6 +347,8 @@ def main() -> int:
         )
         if not sent_ok:
             logger.error("Failed to send 'No Games Today' notification email.")
+        else:
+            _mark_success_today()
         return 0 if sent_ok else 1
 
     if not results_by_sport:
@@ -527,6 +542,7 @@ def main() -> int:
     all_recipients = [cfg["email_to"]] + (cfg.get("email_cc") or [])
     if report_sent_ok:
         print(f"Report emailed to {', '.join(all_recipients)}")
+        _mark_success_today()
     else:
         print(f"WARNING: report email FAILED to send to {', '.join(all_recipients)} — see log above.")
     print(f"Total runtime: {duration:.1f}s\n")
@@ -635,6 +651,12 @@ _NO_PROPS_GIVE_UP_HOUR_PT = 20  # 8 PM Pacific
 _NO_PROPS_ALERT_MARKER = Path("logs/no_props_alerted.date")
 _NO_PROPS_GAVE_UP_MARKER = Path("logs/no_props_gave_up.date")
 
+# Same file run_daily.sh reads/writes to gate its own 30-min retry loop. Checking
+# it here too means a manual `python3 main.py` run — which bypasses run_daily.sh
+# entirely — can't fire off a duplicate email on top of one the scheduler already
+# sent today, and vice versa.
+_SUCCESS_MARKER = Path("logs/last_success.date")
+
 
 def _pacific_hour_and_date_str() -> tuple[int, str]:
     from zoneinfo import ZoneInfo
@@ -647,6 +669,11 @@ def _marker_is_today(marker: Path, today_str: str) -> bool:
         return marker.exists() and marker.read_text().strip() == today_str
     except Exception:
         return False
+
+
+def _mark_success_today() -> None:
+    Path("logs").mkdir(exist_ok=True)
+    _SUCCESS_MARKER.write_text(_pacific_hour_and_date_str()[1])
 
 
 def _handle_no_props_today(send, today: date, props_failed_sports: list[str]) -> int:
@@ -689,6 +716,7 @@ def _handle_no_props_today(send, today: date, props_failed_sports: list[str]) ->
         if not sent_ok:
             logger.error("Failed to send the end-of-day 'gave up' notification email.")
         _NO_PROPS_GAVE_UP_MARKER.write_text(today_str)
+        _mark_success_today()
         return 0
 
     if already_alerted:
